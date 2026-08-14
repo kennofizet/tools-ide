@@ -1,0 +1,19 @@
+{
+  "name": "cursor-browser-emulator-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser emulator tool for Cursor AI debug workflows",
+  "main": "emulator.js",
+  "scripts": {
+    "help": "node emulator.js help",
+    "run": "node emulator.js run --config config.json",
+    "dom": "node emulator.js dom --config config.json",
+    "action": "node emulator.js action --config config.json",
+    "run:bg": "powershell -ExecutionPolicy Bypass -File ./run-background.ps1 -ConfigPath ./config.json",
+    "run:fast": "node emulator.js run --config config.json --preset quick",
+    "run:secure": "node emulator.js run --config config.json --preset secure"
+  },
+  "dependencies": {
+    "playwright": "^1.54.2"
+  }
+}

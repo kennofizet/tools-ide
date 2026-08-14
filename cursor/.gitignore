@@ -1,0 +1,4 @@
+WorkspaceCompanyPage/
+*.code-workspace
+*package-lock.json
+tmp-*.mjs

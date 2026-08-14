@@ -1,0 +1,101 @@
+---
+description: Force TESTING_RULES.md workflow for browser-emulator tasks
+globs: cursor/tool/browser-emulator/**
+alwaysApply: false
+---
+
+# Browser Emulator Mandatory Workflow
+
+When working in `cursor/tool/browser-emulator/`, follow this order:
+
+1. Read `cursor/tool/browser-emulator/TESTING_RULES.md` before running tests or making changes.
+2. Read domain flow note first: `cursor/tool/browser-emulator/flow/domain/<domain>.md` (fallback `flow/domain/default.md`).
+3. If a request includes run/test/login/navigation, use the checklist from `TESTING_RULES.md` first.
+4. Prefer running known scenarios from committed configs. For ad-hoc flows, do not create `test/tmp/*.json` scripts.
+5. Never place real credentials in tracked files. Use local-only files (ignored by git).
+6. In test reports, include: tested URL, runTag, status, finalUrl, and artifact paths.
+7. For exploratory flows, use iterative pattern: think -> one action -> save with `--saveCaseNoteTo` + `--caseKey` -> continue.
+8. In live mode, keep browser session reusable between commands and only close when user explicitly asks.
+9. After each run, read `output/runs/<runTag>/agent-state.json` first, then read the latest screenshot image artifact, then choose next action.
+10. For case runs, read latest `output/runs/<runTag>/steps/` captures before deciding next step.
+11. For each step, read `steps/step-<n>-review.json` and use its `nextSuggestion` before running the next action.
+12. Keep `reviewBeforeNextStep` enabled to enforce review gate; do not continue blindly.
+13. For case runs, one step runs per command by default; always review artifacts before continuing.
+14. Default to Edge CDP attach flow (`useCdp: true`) unless user explicitly asks for local launch (Edge is best/recommended).
+15. For attach matching, prefer existing tab on same target domain before opening a new tab.
+16. Ensure `output/last-domain-flow.json` is reviewed after run when selector issues occur.
+17. Ensure `output/last-domain-page-summary.json` is reviewed before and after runs to keep route memory fresh.
+18. For all agent `node emulator.js ...` commands, enforce timeout range: min `1000` ms, max `8000` ms.
+19. Prefer explicit timeout on each command (`--timeout 3000` recommended).
+20. Do not use `--forceLocalLaunch true` unless user explicitly requests local launch.
+21. For CDP auto-start, always set startup retry policy (`--cdpStartupRetries 2` minimum).
+22. If first CDP startup fails, retry with detached launch (`--cdpRetryLaunchDetached true`) unless user requires foreground only.
+23. For non-interactive runs in any mode, append `--background true`.
+24. Use mandatory auto-retry loop on failures: read `agent-state.json` + step review + failed artifacts, and explicitly read the failed screenshot image file before deciding next retry.
+25. Do not report success unless the requested selector/behavior is visible in captured DOM/screenshot.
+26. For selector failures, escalate in order: stable selector -> role/text -> scoped selector -> explicit open-panel step.
+27. Do not clear session/cache by default for company workspace tests: keep `forgetPageAfterRun=false`, `forgetDomainCacheAfterRun=false`, `forgetSessionAfterRun=false` unless user explicitly asks for privacy wipe.
+28. If failure appears caused by emulator/tool behavior (artifact path bug, exit code bug, capture bug, attach bug), diagnose with artifacts first and retry with usage-level adjustments.
+29. Do NOT auto-edit browser-emulator source/rules/docs from this rule flow; tool code changes require explicit user request.
+30. Retry loop is required without waiting for extra user prompt; NEVER stop immediately after a failed run.
+31. On failure, run at least 3 focused retries (new `runTag` each time) unless PASS happens earlier.
+32. Escalate to HARD BLOCKER only after retry attempts are exhausted and evidence is attached.
+33. Screenshot review is required on each cycle (success and failure); do not skip image review and rely only on text logs.
+
+## Mandatory hold-for-user-answer after UI tasks
+
+After completing any UI edit task (styling, layout, component), the agent MUST:
+
+1. Navigate the browser to the exact edited zone (open the correct page, click the right panel/tab).
+2. Run `node emulator.js action --type holdForUserAnswer` with:
+   - `--selector` pointing at the edited element
+   - `--prompt` describing the change and asking user to annotate/approve
+   - `--holdTimeoutMs 600000`
+   - hold duration must come from `--holdTimeoutMs`, not generic `--timeout`
+   - include `--acceptLabel` so user can explicitly confirm done from toolbar
+3. The Shell call MUST use `block_until_ms: 660000` (11 min) so the agent blocks and waits.
+   NEVER use `block_until_ms: 0` for holdForUserAnswer — that backgrounds it and the agent loses the wait.
+4. Hold is considered complete only when one of these happens:
+   - user clicks toolbar accept
+   - user submits feedback from toolbar
+   - hold timeout is reached
+   Do NOT treat generic CLI success text as hold completion.
+5. After user submits, immediately read and cite the artifacts:
+   - `output/runs/<runTag>/hold-answer.json`
+   - `output/runs/<runTag>/hold-annotation-*.png`
+   - `output/runs/<runTag>/hold-composite-*.png`
+6. Use the submitted answer to decide next steps automatically (no extra user prompt):
+   - `decision=accept`: report done
+   - `decision=feedback`: fix and re-hold
+7. Loop is mandatory: continue hold/fix/retest until timeout or explicit accept. Never stop early.
+8. For every `decision=feedback` cycle, this sequence is mandatory:
+   - apply focused fix(es)
+   - reopen the exact edited zone in browser
+   - run holdForUserAnswer again
+   - read artifacts again
+   - only then decide next step
+
+Hard rules:
+
+- This is NOT optional. Every UI task must end with hold mode.
+- NEVER declare UI task done without hold-for-user-answer.
+- NEVER skip navigating to the edited zone first.
+- NEVER background the hold command. It must block the agent turn.
+- NEVER guess user satisfaction; wait for explicit submission.
+- NEVER stop hold mode while user is still typing.
+- NEVER rely on generic `--timeout` to control hold duration.
+- NEVER stop after reading hold submission; agent must think and continue automatically.
+- NEVER stop while decision is feedback; continue until accept or timeout/hard blocker.
+- NEVER do multiple edit cycles in a row without reopening zone + hold again.
+
+Before any `node emulator.js ...` command, verify:
+
+- target URL is correct
+- runTag is set
+- privacy/forget settings match the task
+- for normal logged-in workspace flows, enforce no-forget session policy to avoid logout
+- command includes Edge attach flags (`--useCdp true`, `--cdpEndpoint "http://127.0.0.1:9223"`) unless user requested local launch
+- command includes CDP startup retry flags for first-time reliability (`--cdpAutoStart true`, `--cdpStartupRetries 2`, `--cdpRetryLaunchDetached true`)
+- timeout is within `1000..8000` ms
+- if retrying, change only one variable per rerun and document the delta
+

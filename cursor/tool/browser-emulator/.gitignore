@@ -1,0 +1,15 @@
+node_modules/
+output/
+config.json
+domain-cache/
+test/
+tmp-*.mjs
+cases/*.local.json
+*.local.json
+*.local.*
+
+REFACTOR_PLAN.md
+
+flow/domain/*.md
+!flow/domain/README.md
+!flow/domain/default.md

@@ -1,0 +1,29 @@
+# Dependencies / OS
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+!.env.example
+
+# Local scratch / machine-only
+auto-optimize/
+*.local
+*.local.*
+*.pem
+*.key
+.github-token*
+
+# Cursor local workspace dumps (also listed under cursor/)
+cursor/WorkspaceCompanyPage/
+cursor/*.code-workspace
+
+# Browser emulator local runtime (belt-and-suspenders; see tool .gitignore)
+cursor/tool/browser-emulator/config.json
+cursor/tool/browser-emulator/output/
+cursor/tool/browser-emulator/domain-cache/
+cursor/tool/browser-emulator/test/
+cursor/tool/browser-emulator/tmp-*.mjs
+cursor/tool/browser-emulator/cases/*.local.json
+cursor/tool/browser-emulator/REFACTOR_PLAN.md
