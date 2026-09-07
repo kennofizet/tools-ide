@@ -31,6 +31,12 @@ const { forgetPageData } = require("./lib/security");
 const { pickPageFromBrowser, ensureLiveCdpEndpoint } = require("./lib/cdp");
 const { loadCaseFile } = require("./lib/case-file");
 const { saveCaseNote } = require("./lib/case-notes");
+const { handlePhoneReviewCommand, HANDS_FREE_COMMANDS } = require("./lib/phone-review");
+const {
+  ensureReviewMode,
+  assertHoldPath,
+  handleReviewModeCommand
+} = require("./lib/review-mode");
 
 const FLOW_DOMAIN_DIR = path.resolve(__dirname, "flow", "domain");
 const MAX_FLOW_NOTE_PREVIEW_LINES = 12;
@@ -83,7 +89,7 @@ function readDomainFlowNote({ flowDomainDir, domain }) {
 
 function getActionPreview(action) {
   if (!action || !action.type) return "unknown-action";
-  if (action.type === "holdForUserAnswer") {
+  if (action.type === "holdForUserAnswer" || action.type === "hold") {
     const selector = action.selector || "";
     return `holdForUserAnswer:${selector || "(no-zone)"}`;
   }
@@ -91,6 +97,7 @@ function getActionPreview(action) {
     return `${action.type}:${action.selector || "(missing-selector)"}`;
   }
   if (action.type === "goto") return `goto:${action.url || "(missing-url)"}`;
+  if (action.type === "evaluate") return "evaluate:page-script";
   if (action.type === "waitForTimeout") return `waitForTimeout:${Number(action.ms || 500)}ms`;
   if (action.type === "press") return `press:${action.key || "(missing-key)"}`;
   return action.type;
@@ -511,11 +518,31 @@ async function captureStepArtifacts({
   timeoutMs
 }) {
   ensureDir(stepCaptureDir);
-  const domPath = path.join(stepCaptureDir, `step-${stepIndex}-${phase}-dom.html`);
-  const screenshotPath = path.join(stepCaptureDir, `step-${stepIndex}-${phase}-screen.png`);
-  await captureDom(page, domPath, writeTextFile);
-  await page.screenshot({ path: screenshotPath, fullPage: true, timeout: timeoutMs });
-  return { domPath, screenshotPath };
+  const waitMs = Math.min(Math.max(Number(timeoutMs) || 3000, 1000), 8000);
+  try {
+    await page.waitForLoadState("domcontentloaded", { timeout: waitMs });
+  } catch {
+    // already idle, or SPA hydration still in progress
+  }
+
+  const captureOnce = async () => {
+    const domPath = path.join(stepCaptureDir, `step-${stepIndex}-${phase}-dom.html`);
+    const screenshotPath = path.join(stepCaptureDir, `step-${stepIndex}-${phase}-screen.png`);
+    await captureDom(page, domPath, writeTextFile);
+    await page.screenshot({ path: screenshotPath, fullPage: true, timeout: waitMs });
+    return { domPath, screenshotPath };
+  };
+
+  try {
+    return await captureOnce();
+  } catch {
+    try {
+      await page.waitForLoadState("load", { timeout: waitMs });
+    } catch {
+      // retry capture even if load wait expires
+    }
+    return await captureOnce();
+  }
 }
 
 function makeReviewToken(stepIndex) {
@@ -571,6 +598,37 @@ async function main() {
   const holdAnswerPath = path.join(runDir, "hold-answer.json");
   const holdAnnotationPath = path.join(runDir, `hold-annotation-${getNowTag()}.png`);
   const holdCompositePath = path.join(runDir, `hold-composite-${getNowTag()}.png`);
+
+  if (command === "review-mode") {
+    handleReviewModeCommand({ args, outputDir });
+    process.exit(0);
+  }
+
+  let reviewModeState = null;
+  const skipReviewGate = command === "hands-free-stop" || command === "phone-stop";
+  if (!skipReviewGate) {
+    try {
+      reviewModeState = ensureReviewMode({ args, config, outputDir, command });
+      assertHoldPath({
+        command,
+        actionType: args.type,
+        mode: reviewModeState && reviewModeState.mode
+      });
+    } catch (error) {
+      console.error(error.message);
+      process.exit(error.exitCode || 1);
+    }
+  }
+
+  if (HANDS_FREE_COMMANDS.has(command)) {
+    try {
+      await handlePhoneReviewCommand({ command, args, config, outputDir });
+      process.exit(0);
+    } catch (error) {
+      console.error(error.message);
+      process.exit(error.exitCode || 1);
+    }
+  }
   const domCheckSelector = args.domCheckSelector || config.domCheckSelector || "body";
   const cliUrl = args.url || "";
   const configuredUrl = cliUrl || config.url || "";
@@ -743,7 +801,7 @@ async function main() {
     ensureDir(domainCacheDir);
   }
   appendLog(logPath, `Command: ${command}`);
-  emitLiveProgress("Opened URL in Browser");
+  emitLiveProgress(useCdp ? `Connecting over CDP ${cdpEndpoint}` : "Opening browser");
   appendLog(logPath, `Run directory: ${runDir}`);
   appendLog(logPath, `Preset: ${preset}`);
   appendLog(logPath, `Mode: ${useCdp ? "cdp-attach" : "local-launch"}`);
@@ -977,7 +1035,11 @@ async function main() {
       );
     }
     finalUrl = page.url() || finalUrl;
-    emitLiveProgress(`Navigating on: ${finalUrl || targetUrl || "unknown-page"}`);
+    if (usingCdp && !cdpNavigate) {
+      emitLiveProgress(`Reusing open tab: ${finalUrl || "(blank)"}`);
+    } else {
+      emitLiveProgress(`Navigating on: ${finalUrl || targetUrl || "unknown-page"}`);
+    }
     appendLog(logPath, `Page ready at selector: ${domCheckSelector}`);
     appendLog(logPath, `Resolved final URL: ${finalUrl || "(unknown)"}`);
     networkMonitor = createNetworkMonitor({
@@ -1062,6 +1124,7 @@ async function main() {
         key: args.key,
         url: args.actionUrl || effectiveConfiguredUrl,
         ms: args.ms,
+        script: args.script,
         expectSelector: args.expectSelector,
         expectUrlIncludes: args.expectUrlIncludes,
         expectDomChange: args.expectDomChange,
@@ -1149,7 +1212,7 @@ async function main() {
         }
       }
       // `holdForUserAnswer` returns a structured payload (answer + annotation data URL).
-      if (action.type === "holdForUserAnswer" && result && typeof result === "object") {
+      if ((action.type === "holdForUserAnswer" || action.type === "hold") && result && typeof result === "object") {
         holdAnswer = result;
         actionSummary = result.summary || "holdForUserAnswer";
         appendLog(logPath, `Action result: ${actionSummary}`);
@@ -1319,15 +1382,19 @@ async function main() {
     }
     appendLog(logPath, `Starting emulator run with ${actions.length} action(s)`);
 
+    const unlockOverlayForLoop = agentOverlayEnabled && agentOverlayDisableClicks && agentOverlayLockDuringActions;
+    if (unlockOverlayForLoop) {
+      await setAgentOverlayLocked(page, false);
+      appendLog(logPath, "Agent click lock disabled for action loop (keeps Vuetify menus open between steps)");
+    }
+
+    try {
     for (let i = startIndex; i < endIndexExclusive; i += 1) {
       let result;
       const action = actions[i];
       emitLiveProgress(`Running step ${i + 1}: ${getActionPreview(action)}`);
       const startedStepAt = new Date().toISOString();
       const urlBeforeStep = page.url() || finalUrl || null;
-      if (agentOverlayEnabled && agentOverlayDisableClicks && agentOverlayLockDuringActions) {
-        await setAgentOverlayLocked(page, false);
-      }
       try {
         result = await applyAction(page, action, timeoutMs);
       } catch (error) {
@@ -1386,10 +1453,6 @@ async function main() {
           logPath
         });
         throw error;
-      } finally {
-        if (agentOverlayEnabled && agentOverlayDisableClicks && agentOverlayLockDuringActions) {
-          await setAgentOverlayLocked(page, true);
-        }
       }
       const stepRecord = {
         index: i + 1,
@@ -1450,6 +1513,12 @@ async function main() {
       appendLog(logPath, `Step ${i + 1}/${actions.length}: ${result}`);
       emitLiveProgress(`Completed step ${i + 1}`);
       await page.waitForTimeout(waitAfterActionMs);
+    }
+    } finally {
+      if (unlockOverlayForLoop) {
+        await setAgentOverlayLocked(page, true).catch(() => {});
+        appendLog(logPath, "Agent click lock re-enabled after action loop");
+      }
     }
 
     if (caseMode && stepMode) {

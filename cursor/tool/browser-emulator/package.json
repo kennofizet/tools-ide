@@ -11,7 +11,8 @@
     "action": "node emulator.js action --config config.json",
     "run:bg": "powershell -ExecutionPolicy Bypass -File ./run-background.ps1 -ConfigPath ./config.json",
     "run:fast": "node emulator.js run --config config.json --preset quick",
-    "run:secure": "node emulator.js run --config config.json --preset secure"
+    "run:secure": "node emulator.js run --config config.json --preset secure",
+    "test": "node scripts/test-public-rewrite.js && node scripts/test-hands-free-proxy-smoke.js"
   },
   "dependencies": {
     "playwright": "^1.54.2"

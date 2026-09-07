@@ -25,6 +25,26 @@ Testing defaults for agents:
 
 - `TESTING_RULES.md` (required before each test run)
 
+## Review device (ask once, remember)
+
+Before any test or feedback run, the tool needs to know **where the human is reviewing**:
+
+| Choice | Meaning | Hold path |
+|---|---|---|
+| **desktop** | This computer | Edge CDP `holdForUserAnswer` |
+| **hands-free** | Another device (phone, tablet, another PC) | `hands-free` Docker tunnel + on-device form |
+
+The agent must **ask the human** the first time, then save:
+
+```bash
+node emulator.js review-mode --mode desktop
+node emulator.js review-mode --mode hands-free
+```
+
+That writes `output/review-mode.local.json` and later commands reuse it. Pass `--reviewMode desktop|hands-free` on any command to change it.
+
+Hard rule: if they want feedback or testing on **another device**, hands-free is required. CDP hold cannot inject a form there.
+
 ## Mandatory Agent Test Loop
 
 Use this loop for every navigation/testing request:
@@ -159,31 +179,32 @@ node emulator.js run --config config.json --useCdp true --cdpEndpoint "http://12
 
 Default behavior prefers this mode: if a matching domain tab is already open in Edge, emulator attaches to it instead of opening a new tab.
 
-1. Launch Edge with remote debugging enabled (new instance):
+1. Launch Edge with remote debugging enabled (new instance). Use a **dedicated port** when `9223` is already your everyday browser:
 
 ```powershell
-"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9223 --user-data-dir="C:\temp\edge-cdp-profile"
+"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9224 --user-data-dir="C:\temp\edge-cdp-profile-9224"
 ```
 
-2. Open your target page in that Edge window.
-3. Run emulator in CDP attach mode:
+2. Open your target page in that Edge window and **leave it open**.
+3. Run emulator in CDP attach mode (match `--cdpEndpoint` to the port above):
 
 ```bash
-node emulator.js action --config config.json --useCdp true --cdpEndpoint "http://127.0.0.1:9223" --attachMatchUrl "domain-link/examplse" --type waitForSelector --selector body --runTag edge-live-check-1 --timeout 3000
+node emulator.js action --config config.json --useCdp true --liveMode true --cdpEndpoint "http://127.0.0.1:9224" --attachMatchUrl "domain-link/examplse" --cdpNavigate false --cdpAutoOpenIfMissing false --type waitForSelector --selector body --runTag edge-live-check-1 --timeout 3000
 ```
 
 Notes:
 - `--attachMatchUrl` can be full URL or partial string.
 - If `--attachMatchUrl` is not provided, emulator auto-uses the target URL domain as attach hint.
 - Add `--attachRequireMatch true` to fail fast if wrong tab is selected.
-- In CDP mode, emulator does not close your external Edge session.
+- In CDP + `--liveMode true` (no `--background true`), emulator keeps the browser open and reuses the matching tab.
+- After the tab exists: omit `--url` and keep `--cdpNavigate false` so later steps do not reload the page.
 - Edge/CDP is enabled by default (`useCdp: true`, `cdpAutoAttach: true`) and falls back to local launch if CDP is unavailable.
 - To use Chrome instead of Edge, set `--browser chrome` (or `"browser": "chrome"` in config).
 - If `--cdpNavigate true`, emulator will navigate the attached tab to `url`.
 - Overlay behavior while running:
   - fixed top-right status card
   - optional click-lock to prevent manual clicking during automation
-- If no matching tab is found, emulator can auto-open your target URL in a new tab (`cdpAutoOpenIfMissing: true`).
+- If no matching tab is found, emulator can auto-open your target URL in a new tab (`cdpAutoOpenIfMissing: true`). Do not use that flag when you already have the tab open.
 
 ### First-Time Friendly Command (Recommended)
 
@@ -250,9 +271,54 @@ npm run dom
 node emulator.js action --config config.json --useCdp true --cdpEndpoint "http://127.0.0.1:9223" --type click --selector "button[type='submit']" --timeout 3000
 ```
 
+## Hands-free mode (another device)
+
+Use this when the reviewer is on **another device**. Desktop CDP `holdForUserAnswer` cannot inject a form there.
+
+What it does:
+
+- starts a local HTML proxy that injects a Submit/Accept overlay
+- opens a Cloudflare quick tunnel with Docker (`cloudflared`)
+- waits for the other device to POST feedback
+- writes the same hold artifacts as desktop hold (`hold-answer.json`, screenshot, drawing)
+
+Commands:
+
+```bash
+node emulator.js review-mode --mode hands-free
+node emulator.js hands-free --config config.json --origin http://127.0.0.1 --hostHeader app.example.test --holdTimeoutMs 600000 --runTag hands-free-1
+node emulator.js hands-free-reload --config config.json --state progress
+node emulator.js hands-free-reload --config config.json --state listening
+node emulator.js hands-free-stop --config config.json
+```
+
+Agent workflow:
+
+1. Confirm saved mode is `hands-free`.
+2. Run `hands-free` and **block** (`block_until_ms` >= `--holdTimeoutMs`).
+3. Open the printed `HANDS_FREE_URL` on the other device (login, go to the edited page).
+4. Watch for `HANDS_FREE_HOLD_RECEIVED` / `HANDS_FREE_HOLD_TIMEOUT`.
+5. Read `output/runs/<runTag>/hold-answer.json` plus `hold-composite.jpg` / `hold-annotation.png`.
+6. On feedback: `hands-free-reload --state progress`, edit, `hands-free-reload --state listening`, then `hands-free` wait again.
+7. `hands-free-stop` when the other-device session is finished.
+
+Notes:
+
+- `--origin` is the local server the proxy forwards to. `--hostHeader` is for name-based vhosts.
+- The other device must not load loopback or other local origins. The proxy rewrites those to same-origin paths (`/@vite/...`, `/__emu/x/0`, `/__emu/x/1`) so Chrome Private Network Access does not block the tunnel.
+- Vite-style modules (`/@...`, `/src/...`, `/resources/...`, `?import`, root source files) go to the dev server. Public files (`/*.css`, `/sw*.js`, `/js/`, `/build/`) stay on the app server.
+- Pass extra API hosts with `--extraOrigin` (comma list) or `--backendOrigin` (first extra origin). Do not guess extra hosts from the app hostname. Same-origin `/api/...` is also forwarded to the first extra origin.
+- Extra origins are rewritten to `/__emu/x/0`, `/__emu/x/1`, … . `/__emu/backend` is an alias of the first extra origin.
+- Runtime code must not hardcode product hostnames or machine paths. Put those in gitignored `*.local.json` and `flow/domain/<your-domain>.md`.
+- If the other device gets `503` or the trycloudflare host does not resolve, the quick tunnel dropped. Restart `hands-free` and open the new `HANDS_FREE_URL`. Do not keep using the old hostname.
+- Default `--stripScript` is empty. Pass a filename only when the app injects its own overlay that would conflict with the tool form.
+- Do not use `--background true` for the wait. The serve process is detached automatically; the wait command must stay in the foreground.
+- `phone-review` / `phone-reload` / `phone-stop` remain as aliases.
+- Sanity tests (no browser): `npm test` in this folder.
+
 ## Hold Mode (User Answer + Draw) — MANDATORY after UI tasks
 
-This is the final step of every UI edit task. The agent MUST navigate to the edited zone and run `holdForUserAnswer` before declaring done.
+This is the final step of every UI edit task **when review mode is desktop**. The agent MUST navigate to the edited zone and run `holdForUserAnswer` before declaring done. `--type hold` is a short alias for the same action. If review mode is `hands-free`, use `hands-free` instead — never CDP hold.
 
 What it does:
 
@@ -365,6 +431,8 @@ node emulator.js run --config config.json --useCdp true --cdpEndpoint "http://12
 - `waitForSelector` (requires `selector`)
 - `waitForTimeout` (optional `ms`)
 - `goto` (requires `url`)
+- `evaluate` (requires `script`)
+- `hold` / `holdForUserAnswer`
 
 ## Output
 

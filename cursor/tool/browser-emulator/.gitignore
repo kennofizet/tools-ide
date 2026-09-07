@@ -13,3 +13,7 @@ REFACTOR_PLAN.md
 flow/domain/*.md
 !flow/domain/README.md
 !flow/domain/default.md
+
+# Workspace-only page probes (keep scripts/test-*.js)
+scripts/probe-*.js
+scripts/draw-*.js

@@ -1,4 +1,16 @@
-const VALID_COMMANDS = new Set(["run", "dom", "action", "help"]);
+const VALID_COMMANDS = new Set([
+  "run",
+  "dom",
+  "action",
+  "help",
+  "review-mode",
+  "hands-free",
+  "hands-free-reload",
+  "hands-free-stop",
+  "phone-review",
+  "phone-reload",
+  "phone-stop"
+]);
 const VALID_PRESETS = new Set(["quick", "balanced", "secure"]);
 
 function printHelp() {
@@ -9,10 +21,14 @@ Usage:
   node emulator.js <command> [--flags]
 
 Commands:
-  run      Run full actions array from config
-  dom      Capture DOM only
-  action   Run one action via CLI flags
-  help     Show this help
+  run                 Run full actions array from config
+  dom                 Capture DOM only
+  action              Run one action via CLI flags
+  review-mode         Ask/save desktop vs hands-free (remembered locally)
+  hands-free          Other-device review: Docker tunnel + on-device form, then wait
+  hands-free-reload   Bump live-reload version after a code change
+  hands-free-stop     Stop the hands-free tunnel and proxy
+  help                Show this help
 
 Common flags:
   --config <path>                 Config file path (default: config.json)
@@ -42,11 +58,12 @@ Common flags:
   --resetCaseProgress true        Restart case from step 1
 
 Action mode flags:
-  --type <click|fill|press|waitForSelector|waitForTimeout|goto|holdForUserAnswer>
+  --type <click|fill|press|waitForSelector|waitForTimeout|goto|evaluate|holdForUserAnswer|hold>
   --selector <css|text=...>
   --value <text>
   --key <Enter|Tab|...>
   --actionUrl <https://...>       Used by type=goto
+  --script <js>                   Used by type=evaluate (runs in the open tab)
   --ms <number>                   Used by type=waitForTimeout
   --expectSelector <css|text=...> Require selector visible after action
   --expectUrlIncludes <text>      Require current URL to contain text after action
@@ -65,10 +82,28 @@ Action mode flags:
   --caseKey <name>                Scenario key (example: open-project)
   --caseNote <text>               Optional human note for current step
 
+Phone / hands-free flags:
+  --reviewMode <desktop|hands-free>  Save and use this review device (remembered)
+  --mode <desktop|hands-free>        Used by review-mode
+  --origin <http://127.0.0.1>        Local app origin the tunnel proxies to
+  --hostHeader <host>                Host header for local vhosts (example: app.example.test)
+  --viteOrigin <http://127.0.0.1:5173>  Vite (or other) dev server to keep off loopback
+  --extraOrigin <https://...>        Extra origin to proxy at /__emu/x/N (comma list)
+  --backendOrigin <https://...>      Alias of the first extra origin
+  --extraHost <host>                 Optional Host header for extra origins (comma list)
+  --dockerHost host.docker.internal
+  --stripScript <file.js>            Remove an app script before injecting hold.js
+  --startOnly true                   Start tunnel only, do not wait for submit
+  --state <listening|progress>       Used by hands-free-reload
+
 Examples:
   node emulator.js dom --config config.json --url "https://example.com"
   node emulator.js action --config config.json --type waitForSelector --selector body
   node emulator.js run --config config.json --preset secure
+  node emulator.js review-mode --mode hands-free
+  node emulator.js hands-free --config config.json --origin http://127.0.0.1 --hostHeader app.example.test --holdTimeoutMs 600000 --runTag hands-free-1
+  node emulator.js hands-free-reload --config config.json --state listening
+  node emulator.js hands-free-stop --config config.json
   `);
 }
 

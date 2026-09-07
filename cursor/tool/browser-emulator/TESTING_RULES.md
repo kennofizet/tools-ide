@@ -2,6 +2,22 @@
 
 Read this file before every test run.
 
+## 0) Review device (ask once, remember)
+
+Before the first `run` / `action` / `dom` / hold in a workspace:
+
+1. If `output/review-mode.local.json` is missing, **ask the human**:
+   - This computer (desktop Edge CDP)
+   - Another device (hands-free: Docker tunnel + on-device form)
+2. Save it:
+   - `node emulator.js review-mode --mode desktop`
+   - `node emulator.js review-mode --mode hands-free`
+3. Later runs print `REVIEW_MODE_USING` and reuse that file.
+4. If they want feedback or testing on **another device**, hands-free is required. Do not use CDP `holdForUserAnswer` for that.
+5. To switch later: `review-mode --mode ...` or `--reviewMode ...` on a command.
+
+If the CLI prints `REVIEW_MODE_REQUIRED`, stop and ask. Do not guess.
+
 ## 1) Core Rules
 
 - Always reuse session unless you intentionally need a clean state.
@@ -34,35 +50,41 @@ Read this file before every test run.
 
 ## 2) Required Pre-Run Checklist
 
-1. Confirm target URL and expected page behavior.
-2. Confirm domain flow note exists (or use `flow/domain/default.md`) and read it first.
-3. Confirm config file exists (`config.json` or `config.example.json` for quick tests).
-4. Confirm persistent mode:
+1. Confirm review mode (`output/review-mode.local.json` or ask + `review-mode --mode`).
+2. Confirm target URL and expected page behavior.
+3. Confirm domain flow note exists (or use `flow/domain/default.md`) and read it first.
+4. Confirm config file exists (`config.json` or `config.example.json` for quick tests).
+5. Confirm persistent mode:
    - `--keepProgress true`
    - `--session <stable-name>`
-5. Confirm run is traceable:
+6. Confirm run is traceable:
    - `--runTag <descriptive-tag>`
-6. Confirm timeout is realistic for the page and within enforced range:
+7. Confirm timeout is realistic for the page and within enforced range:
    - minimum `1000`
    - maximum `8000`
    - recommended default `3000`
-7. Confirm session policy:
+8. Confirm session policy:
    - normal workspace test: `--forgetPageAfterRun false`
    - normal workspace test: `--forgetDomainCacheAfterRun false`
    - normal workspace test: `--forgetSessionAfterRun false`
    - keep `--enableDomainCache true` for flow memory
    - switch to strict privacy mode only when user explicitly requests it
-8. If testing an already-open Edge tab:
-   - Edge must be started with `--remote-debugging-port=9223`
-   - run with `--useCdp true`
+9. If testing an already-open Edge tab:
+   - Start Edge with `--remote-debugging-port=<port>` that matches `--cdpEndpoint` (default example is `9223`; use a **dedicated other port** such as `9224` when the user's everyday browser already occupies `9223`)
+   - Use a dedicated `--user-data-dir` / `cdpUserDataDir` per port so sessions do not collide
+   - run with `--useCdp true --liveMode true`
+   - NEVER pass `--background true` when the browser must stay open for reuse (background closes interactive keep-open)
    - keep browser preference as Edge unless user explicitly requests Chrome (`--browser edge`)
-   - set `--attachMatchUrl` to avoid attaching wrong tab
-   - use `--attachRequireMatch true` for strict safety
-   - for public-friendly behavior, keep `--cdpAutoOpenIfMissing true`
-   - for startup reliability, keep `--cdpAutoStart true --cdpStartupRetries 2 --cdpRetryLaunchDetached true`
+   - set `--attachMatchUrl` to the domain/path already in that tab
+   - use `--attachRequireMatch true` for strict reuse (fail instead of picking the wrong tab)
+   - after the tab exists: `--cdpNavigate false`, omit `--url`, and `--cdpAutoOpenIfMissing false` so the current page is not reloaded or duplicated
+   - for first-time public runs when no tab exists yet, `--cdpAutoOpenIfMissing true` is OK
+   - for startup reliability when the dedicated-port browser is not running, keep `--cdpAutoStart true --cdpStartupRetries 2 --cdpRetryLaunchDetached true`
 9. Default attach matching:
    - if `--attachMatchUrl` is empty, tool should match by target URL domain first
-   - only open/navigate new tab when no matching domain tab exists
+   - only open/navigate a new tab when no matching domain tab exists
+   - once a matching tab is attached, keep reusing it for later steps in the same session
+   - Vuetify `VMenu` closes when the agent overlay remounts between separate `action` commands. Open a menu and click its item in one `run` actions array (same attach). Prefer `.v-list-item:has-text("...")` over `a:has-text("...")`.
 10. Keep automation UI lock visible:
    - `--agentOverlayEnabled true`
    - `--agentOverlayText "Agent in progress"`
@@ -215,7 +237,7 @@ Hard rule:
 
 ## 4e) Mandatory Hold Mode After Every UI Task (Human-in-the-Loop)
 
-After completing ANY UI edit task (styling, layout, component change, visual fix), the agent MUST run `holdForUserAnswer` before declaring the task done. This is NOT optional.
+After completing ANY UI edit task (styling, layout, component change, visual fix), the agent MUST run `holdForUserAnswer` before declaring the task done. This is NOT optional. `--type hold` is an alias of `holdForUserAnswer` (do not treat it as a different action).
 
 Required workflow:
 
@@ -278,7 +300,37 @@ Hard rules:
 - NEVER continue editing indefinitely without returning to hold mode.
 - NEVER ignore visual-only feedback when `decision=feedback` and note text is empty; analyze drawings from hold images and continue fix/retest loop.
 
-## 4f) Hold UX Defaults (Public-Friendly)
+## 4f) Hands-free mode (another device)
+
+When the reviewer is on another device, CDP `holdForUserAnswer` cannot show the form. Hands-free is required.
+
+Required workflow:
+
+1. `node emulator.js review-mode --mode hands-free` (skip if already saved).
+2. `node emulator.js hands-free --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag hands-free-1`
+3. Shell must block. Watch for `HANDS_FREE_HOLD_RECEIVED` or `HANDS_FREE_HOLD_TIMEOUT`.
+4. Tell the user the printed `HANDS_FREE_URL`.
+5. After submit, read:
+   - `output/runs/<runTag>/hold-answer.json`
+   - `output/runs/<runTag>/hold-composite.jpg`
+   - `output/runs/<runTag>/hold-annotation.png` (if drawn)
+6. Feedback loop:
+   - `hands-free-reload --state progress`
+   - edit
+   - `hands-free-reload --state listening`
+   - `hands-free` wait again
+7. `hands-free-stop` when done with the other-device session.
+
+Hard rules:
+
+- NEVER use desktop CDP hold as a substitute for another-device review.
+- NEVER background the `hands-free` wait.
+- NEVER invent a project-local hold JSON watcher when this command exists.
+- If saved mode is `hands-free`, refuse CDP hold and use this path.
+- Chrome blocks tunnel pages from loading loopback. Restart `hands-free` if the other device still requests `127.0.0.1` or other local origins. Pass `--extraOrigin` for API hosts; do not guess names from the app vhost. If the other device gets `503` or the trycloudflare host dies, restart `hands-free` and use the new URL.
+- If the other device console shows module scripts with MIME `text/html`, a Vite path was sent to the app server. Restart `hands-free` so Vite modules go to the dev server and public files stay on the app server.
+
+## 4g) Hold UX Defaults (Public-Friendly)
 
 Use these hold defaults for all UI review runs unless explicitly overridden by user:
 
@@ -340,7 +392,7 @@ node emulator.js action --config config.json --useCdp true --cdpEndpoint "http:/
 
 - Session names: `<domain>-main` or `<project>-main`
 - Run tags: `<domain>-<flow>-<index>`
-  - example: `company-project-create-task-1`
+  - example: `example-create-task-1`
 
 ## 8) Minimum Report After Every Test
 
@@ -368,9 +420,14 @@ Record at least:
   - config template: `test/login/config.login.invalid.example.json`
   - report helper: `test/login/report-login-result.js`
 - For live iterative testing on user-opened browser:
-  - use `--liveMode true`
-  - keep `cdpAutoStart` enabled for first-time reliability
-  - keep Edge open with remote debugging port
+  - use `--liveMode true` (never `--background true`)
+  - keep Edge open with remote debugging on the **same port** as `--cdpEndpoint`
+  - prefer a dedicated port other than the user's daily browser port
+  - reuse the matching open tab (`--attachMatchUrl`, `--cdpNavigate false`, omit `--url`)
+  - keep `cdpAutoStart` enabled only for first-time reliability
+  - after in-tab JS that reloads/navigates (`evaluate`), wait for a stable selector in the **same** `run`; do not start a new command while the document is still swapping
+  - prefer waiting for a new selector over `location.reload()` when HMR already applied the change
+  - step capture waits for `domcontentloaded` and retries once if the screenshot races a navigation
   - save each confirmed step with `--saveCaseNoteTo output/case-notes.json --caseKey <scenario-key>`
   - store human-readable flow notes (example: login -> projects -> open project)
   - do not close browser between steps unless user explicitly asks

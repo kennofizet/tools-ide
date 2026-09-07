@@ -8,6 +8,7 @@ alwaysApply: false
 
 When working in `cursor/tool/browser-emulator/`, follow this order:
 
+0. **Review device first.** If `output/review-mode.local.json` is missing, ask the human: this computer (desktop) or another device (hands-free). Save with `node emulator.js review-mode --mode desktop|hands-free`. Do not start hold until that is saved. Another-device feedback **requires** hands-free.
 1. Read `cursor/tool/browser-emulator/TESTING_RULES.md` before running tests or making changes.
 2. Read domain flow note first: `cursor/tool/browser-emulator/flow/domain/<domain>.md` (fallback `flow/domain/default.md`).
 3. If a request includes run/test/login/navigation, use the checklist from `TESTING_RULES.md` first.
@@ -34,7 +35,7 @@ When working in `cursor/tool/browser-emulator/`, follow this order:
 24. Use mandatory auto-retry loop on failures: read `agent-state.json` + step review + failed artifacts, and explicitly read the failed screenshot image file before deciding next retry.
 25. Do not report success unless the requested selector/behavior is visible in captured DOM/screenshot.
 26. For selector failures, escalate in order: stable selector -> role/text -> scoped selector -> explicit open-panel step.
-27. Do not clear session/cache by default for company workspace tests: keep `forgetPageAfterRun=false`, `forgetDomainCacheAfterRun=false`, `forgetSessionAfterRun=false` unless user explicitly asks for privacy wipe.
+27. Do not clear session/cache by default for logged-in workspace tests: keep `forgetPageAfterRun=false`, `forgetDomainCacheAfterRun=false`, `forgetSessionAfterRun=false` unless user explicitly asks for privacy wipe.
 28. If failure appears caused by emulator/tool behavior (artifact path bug, exit code bug, capture bug, attach bug), diagnose with artifacts first and retry with usage-level adjustments.
 29. Do NOT auto-edit browser-emulator source/rules/docs from this rule flow; tool code changes require explicit user request.
 30. Retry loop is required without waiting for extra user prompt; NEVER stop immediately after a failed run.
@@ -44,7 +45,21 @@ When working in `cursor/tool/browser-emulator/`, follow this order:
 
 ## Mandatory hold-for-user-answer after UI tasks
 
-After completing any UI edit task (styling, layout, component), the agent MUST:
+## Mandatory hold after UI tasks
+
+Read `output/review-mode.local.json` (or ask + save) before hold.
+
+If mode is **hands-free** (another device):
+
+1. `node emulator.js hands-free --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag hands-free-1`
+2. Block the Shell call. Read `HANDS_FREE_URL` and `HANDS_FREE_HOLD_RECEIVED`.
+3. After submit, read `output/runs/<runTag>/hold-answer.json` plus hold images.
+4. After edits, `hands-free-reload --state listening`, then wait again with `hands-free`.
+5. `hands-free-stop` when the other-device session ends.
+6. NEVER use CDP `holdForUserAnswer` while hands-free is saved.
+7. Chrome blocks tunnel pages from loading loopback. Restart `hands-free` if the other device still requests `127.0.0.1` or other local origins. Pass `--extraOrigin` for API hosts; do not guess names from the app vhost.
+
+If mode is **desktop** (this computer), the agent MUST:
 
 1. Navigate the browser to the exact edited zone (open the correct page, click the right panel/tab).
 2. Run `node emulator.js action --type holdForUserAnswer` with:

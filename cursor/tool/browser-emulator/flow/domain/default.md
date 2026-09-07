@@ -4,6 +4,11 @@
 - No domain-specific flow note found.
 - Start with DOM probe + one safe action before complex clicks.
 
+## Review device
+- If `output/review-mode.local.json` is missing, ask: this computer (desktop) or another device (hands-free).
+- Save with `node emulator.js review-mode --mode desktop|hands-free`.
+- Other-device feedback requires `hands-free`.
+
 ## Fast Checklist
 - Confirm target URL and runTag.
 - Reuse stable session (`--session`, `--keepProgress true`) unless clean state is required.

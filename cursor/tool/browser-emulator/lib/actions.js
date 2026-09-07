@@ -64,6 +64,31 @@ async function findVisibleLocator(page, selector, timeoutMs) {
   return locator.first();
 }
 
+async function findClickableLocator(page, selector, timeoutMs) {
+  const primary = await findVisibleLocator(page, selector, timeoutMs);
+  const primaryVisible = await primary.isVisible({ timeout: 75 }).catch(() => false);
+  if (primaryVisible) return primary;
+
+  const hasTextValue = extractHasTextValue(selector);
+  if (!hasTextValue) return primary;
+
+  const fallbacks = [
+    `.v-list-item:has-text("${hasTextValue}")`,
+    `button:has-text("${hasTextValue}")`,
+    `[role="menuitem"]:has-text("${hasTextValue}")`
+  ];
+  const fallbackTimeout = Math.max(400, Math.min(Number(timeoutMs || 1500), 1500));
+
+  for (const fallback of fallbacks) {
+    if (fallback === selector) continue;
+    const candidate = await findVisibleLocator(page, fallback, fallbackTimeout);
+    const visible = await candidate.isVisible({ timeout: 75 }).catch(() => false);
+    if (visible) return candidate;
+  }
+
+  return primary;
+}
+
 function normalizeLooseText(value) {
   return String(value || "")
     .normalize("NFD")
@@ -92,7 +117,7 @@ async function clickByLooseTextFallback(page, rawText) {
         && style.display !== "none";
     };
     const candidates = Array.from(
-      document.querySelectorAll("a,button,[role='button'],.nav-item-title,.v-list-item-title,.nav-link,span,div")
+      document.querySelectorAll("a,button,[role='button'],.v-list-item,.nav-item-title,.v-list-item-title,.nav-link,span,div")
     );
     for (const el of candidates) {
       const text = normalize(el.textContent);
@@ -1032,7 +1057,7 @@ async function applyAction(page, action, timeoutMs) {
         const beforeDom = String(action.expectDomChange || "").trim().toLowerCase() === "true"
           ? await page.content()
           : "";
-        const clickable = await findVisibleLocator(page, action.selector, timeoutMs);
+        const clickable = await findClickableLocator(page, action.selector, timeoutMs);
         try {
           await runWithNavigationRetry(page, () => clickable.click({ timeout: timeoutMs }));
         } catch (error) {
@@ -1109,6 +1134,21 @@ async function applyAction(page, action, timeoutMs) {
       }
       return `navigated ${action.url}`;
 
+    case "evaluate":
+      if (!action.script) throw new Error("evaluate requires script");
+      {
+        const beforeDom = String(action.expectDomChange || "").trim().toLowerCase() === "true"
+          ? await page.content()
+          : "";
+        await page.evaluate(code => {
+          // eslint-disable-next-line no-eval
+          window.eval(code);
+        }, String(action.script));
+        await verifyActionExpectations(page, action, timeoutMs, beforeDom);
+      }
+      return "evaluated page script";
+
+    case "hold":
     case "holdForUserAnswer":
       return runHoldForUserAnswer(page, action, timeoutMs);
 
