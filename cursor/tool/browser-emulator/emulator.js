@@ -28,7 +28,7 @@ const { ensureLatestPointers, isLikelyAuthRedirect, writeRunSummary } = require(
 const { applyAction, captureDom } = require("./lib/actions");
 const { setupAgentOverlay, setAgentOverlayLocked, removeAgentOverlay } = require("./lib/overlay");
 const { forgetPageData } = require("./lib/security");
-const { pickPageFromBrowser, ensureLiveCdpEndpoint } = require("./lib/cdp");
+const { pickPageFromBrowser, ensureLiveCdpEndpoint, connectOverCdpWithRetry } = require("./lib/cdp");
 const { loadCaseFile } = require("./lib/case-file");
 const { saveCaseNote } = require("./lib/case-notes");
 const { handlePhoneReviewCommand, HANDS_FREE_COMMANDS } = require("./lib/phone-review");
@@ -37,6 +37,7 @@ const {
   assertHoldPath,
   handleReviewModeCommand
 } = require("./lib/review-mode");
+const { resolveHubOptions, checkHubHealth, publishTask, ensureIdeWorking } = require("./lib/hub-live");
 
 const FLOW_DOMAIN_DIR = path.resolve(__dirname, "flow", "domain");
 const MAX_FLOW_NOTE_PREVIEW_LINES = 12;
@@ -100,11 +101,57 @@ function getActionPreview(action) {
   if (action.type === "evaluate") return "evaluate:page-script";
   if (action.type === "waitForTimeout") return `waitForTimeout:${Number(action.ms || 500)}ms`;
   if (action.type === "press") return `press:${action.key || "(missing-key)"}`;
+  if (action.type === "setViewport") return `setViewport:${action.width || "?"}x${action.height || "?"}`;
   return action.type;
 }
 
+let ideHubOptions = null;
+let ideRunTag = "";
+let ideTaskTitle = "Emulator";
+const ideStreamLines = [];
+
+function pushIdeStream(line) {
+  const text = String(line || "").trim();
+  if (!text) return;
+  ideStreamLines.push(text);
+  if (ideStreamLines.length > 80) ideStreamLines.splice(0, ideStreamLines.length - 80);
+}
+
 function emitLiveProgress(message) {
-  console.log(message);
+  const text = String(message || "");
+  console.log(text);
+  pushIdeStream(text);
+  if (!ideHubOptions || !ideHubOptions.ok) return;
+  publishTask(ideHubOptions, {
+    title: ideTaskTitle,
+    content: text,
+    stream: text,
+    append: true,
+    kind: "command",
+    phase: "work",
+    runTag: ideRunTag,
+    tool: "browser-emulator"
+  }).catch(() => {});
+}
+
+async function bootIdeWorking({ args, config, runTag, title }) {
+  ideRunTag = String(runTag || "");
+  ideTaskTitle = String(title || "Emulator");
+  const hub = await checkHubHealth(resolveHubOptions({ args, config }));
+  ideHubOptions = hub;
+  if (!hub.ok) {
+    console.log("IDE_WORKING_SKIP hub offline");
+    return;
+  }
+  await ensureIdeWorking(hub);
+  await publishTask(hub, {
+    title: ideTaskTitle,
+    content: "Tool started",
+    stream: ideStreamLines.join("\n"),
+    phase: "work",
+    runTag: ideRunTag,
+    tool: "browser-emulator"
+  });
 }
 
 function getHostnameSafe(rawUrl) {
@@ -469,8 +516,11 @@ function buildStepReview({ stepRecord, previousStep }) {
 
   let nextSuggestion = "Review current step capture, then continue with next planned action.";
   if (status === "failed") {
-    nextSuggestion = "Fix selector/action for this failed step, then retry same step.";
     nextSuggestion = "Step failed. Read current screenshot/DOM, decide the correct next action for the current page state, then run the next command manually.";
+    if (actionType === "waitForSelector") {
+      const selector = String(stepRecord?.action?.selector || "").trim();
+      nextSuggestion = `Selector ${selector || "(missing)"} was not visible on ${urlAfter || "this page"}. Confirm the current route first; if this selector belongs to another page, goto that URL then wait. Do not retry the same wait on the wrong route.`;
+    }
   } else if (actionType === "fill") {
     nextSuggestion = "Continue with submit/click action for this form.";
   } else if (actionType === "click" && changedUrl) {
@@ -506,7 +556,10 @@ function runStepReviewGate({
     throw new Error(`Step review gate failed at step ${stepRecord.index}: missing review fields.`);
   }
   if (forceStepCapture && (!stepRecord.domPath || !stepRecord.screenshotPath)) {
-    throw new Error(`Step review gate failed at step ${stepRecord.index}: missing step capture artifacts.`);
+    const actionType = String(stepRecord?.action?.type || "")
+    if (actionType !== "hold" && actionType !== "holdForUserAnswer") {
+      throw new Error(`Step review gate failed at step ${stepRecord.index}: missing step capture artifacts.`);
+    }
   }
 }
 
@@ -629,6 +682,18 @@ async function main() {
       process.exit(error.exitCode || 1);
     }
   }
+
+  const ideTitle =
+    command === "action" && String(args.type || "") === "goto"
+      ? "Navigate"
+      : command === "action"
+        ? `Action ${args.type || ""}`.trim()
+        : command === "run"
+          ? "Run"
+          : command === "dom"
+            ? "DOM"
+            : "Emulator";
+  await bootIdeWorking({ args, config, runTag, title: ideTitle });
   const domCheckSelector = args.domCheckSelector || config.domCheckSelector || "body";
   const cliUrl = args.url || "";
   const configuredUrl = cliUrl || config.url || "";
@@ -932,7 +997,7 @@ async function main() {
         }
       }
       try {
-        browser = await chromium.connectOverCDP(cdpEndpoint);
+        browser = await connectOverCdpWithRetry(chromium, cdpEndpoint);
         usingCdp = true;
         const selected = await pickPageFromBrowser(browser, { matchUrl: effectiveAttachMatchUrl, timeoutMs });
         context = selected.context;
@@ -1055,12 +1120,17 @@ async function main() {
       },
     });
     if (agentOverlayEnabled) {
-      await setupAgentOverlay(page, {
-        text: agentOverlayText,
-        disableClicks: agentOverlayDisableClicks,
-        lockOnStart: agentOverlayDisableClicks && agentOverlayLockDuringActions
-      });
-      appendLog(logPath, "Agent overlay mounted (fixed top-right)");
+      appendLog(logPath, "Mounting agent overlay");
+      try {
+        await setupAgentOverlay(page, {
+          text: agentOverlayText,
+          disableClicks: agentOverlayDisableClicks,
+          lockOnStart: agentOverlayDisableClicks && agentOverlayLockDuringActions
+        });
+        appendLog(logPath, "Agent overlay mounted (fixed top-right)");
+      } catch (error) {
+        appendLog(logPath, `Agent overlay skipped: ${error.message || error}`);
+      }
     }
 
     if (enableDomainCache) {
@@ -1125,6 +1195,8 @@ async function main() {
         url: args.actionUrl || effectiveConfiguredUrl,
         ms: args.ms,
         script: args.script,
+        width: args.width,
+        height: args.height,
         expectSelector: args.expectSelector,
         expectUrlIncludes: args.expectUrlIncludes,
         expectDomChange: args.expectDomChange,

@@ -7,6 +7,7 @@ const VALID_COMMANDS = new Set([
   "hands-free",
   "hands-free-reload",
   "hands-free-stop",
+  "hands-free-watch",
   "phone-review",
   "phone-reload",
   "phone-stop"
@@ -26,7 +27,8 @@ Commands:
   action              Run one action via CLI flags
   review-mode         Ask/save desktop vs hands-free (remembered locally)
   hands-free          Other-device review: Docker tunnel + on-device form, then wait
-  hands-free-reload   Bump live-reload version after a code change
+  hands-free-reload   Publish live WAIT / IN PROGRESS (no full refresh when hub is on)
+  hands-free-watch    Print HANDS_FREE_HOLD_WAKE when feedback arrives without a wait
   hands-free-stop     Stop the hands-free tunnel and proxy
   help                Show this help
 
@@ -58,13 +60,15 @@ Common flags:
   --resetCaseProgress true        Restart case from step 1
 
 Action mode flags:
-  --type <click|fill|press|waitForSelector|waitForTimeout|goto|evaluate|holdForUserAnswer|hold>
+  --type <click|fill|press|waitForSelector|waitForTimeout|goto|evaluate|setViewport|holdForUserAnswer|hold>
   --selector <css|text=...>
   --value <text>
   --key <Enter|Tab|...>
   --actionUrl <https://...>       Used by type=goto
   --script <js>                   Used by type=evaluate (runs in the open tab)
   --ms <number>                   Used by type=waitForTimeout
+  --width <px>                    Used by type=setViewport
+  --height <px>                   Used by type=setViewport
   --expectSelector <css|text=...> Require selector visible after action
   --expectUrlIncludes <text>      Require current URL to contain text after action
   --expectDomChange true          Require DOM content to change after action
@@ -94,7 +98,25 @@ Phone / hands-free flags:
   --dockerHost host.docker.internal
   --stripScript <file.js>            Remove an app script before injecting hold.js
   --startOnly true                   Start tunnel only, do not wait for submit
-  --state <listening|progress>       Used by hands-free-reload
+  --state <listening|progress>       Used by hands-free-reload (live state only when hub is on)
+  --answer <text>                    Show this text in Box 1 on the other device when WAIT
+  --holdToken <secret>               Session token required for POST /__emu/hold (auto-generated)
+  --insecureUpstream true            Allow bad/self-signed TLS to --extraOrigin (default: false)
+  --hubUrl <http://127.0.0.1:8787>   Socket hub HTTP origin (used when /health is ok)
+  --hubToken <secret>                Shared hub token
+  --hubRoom <name>                   Hub room (default: tools)
+  --noHub true                       Do not use the socket hub
+
+Live tools:
+  Socket hub (cursor/tool/socket-server) on :8787. When /health is ok, hands-free
+  publishes live.state and ide.task. The sibling IDE working viewer on :8788
+  renders title / content / stream. Overlay stays WAIT / IN PROGRESS only.
+
+Security:
+  HANDS_FREE_OPEN includes ?emu_hold=<token>. Treat that URL as a capability link
+  (it can submit hold feedback and wake the agent). Do not paste the bare tunnel
+  host into public chats. Upstream HTTPS verifies certificates unless
+  --insecureUpstream true.
 
 Examples:
   node emulator.js dom --config config.json --url "https://example.com"

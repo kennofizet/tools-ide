@@ -54,10 +54,11 @@ If mode is **hands-free** (another device):
 1. `node emulator.js hands-free --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag hands-free-1`
 2. Block the Shell call. Read `HANDS_FREE_URL` and `HANDS_FREE_HOLD_RECEIVED`.
 3. After submit, read `output/runs/<runTag>/hold-answer.json` plus hold images.
-4. After edits, `hands-free-reload --state listening`, then wait again with `hands-free`.
+4. After submit, badge is IN PROGRESS. Apply edits (hub live / Vite HMR). Then `hands-free-reload --state listening`, then wait again with `hands-free`. Do not wait while still editing.
 5. `hands-free-stop` when the other-device session ends.
 6. NEVER use CDP `holdForUserAnswer` while hands-free is saved.
 7. Chrome blocks tunnel pages from loading loopback. Restart `hands-free` if the other device still requests `127.0.0.1` or other local origins. Pass `--extraOrigin` for API hosts; do not guess names from the app vhost.
+8. If the socket hub is running, `hands-free-reload` must only publish `live.state` (`HUB_LIVE_SENT`). Never full-refresh the other device while the hub is up. Vite `full-reload` is converted to a **single-module** `js-update` on the proxy websocket, and compiled `.vue` HMR is forced to component `reload` (`rewrite-v22+`). Overlay WAIT must not blast HMR. Do not edit the product app to make review HMR work. Badge: WAIT while a wait loop is active; IN PROGRESS only if Submit arrives during that wait. Submit with no wait must not stick on IN PROGRESS. `--startOnly` is not listen; after serving, start `hands-free-watch` so Submit without a wait loop still auto-starts the agent (`HANDS_FREE_HOLD_WAKE`). Do not show “Agent is not in listen.” Task title / content / stream render in sibling `cursor/tool/ide-working` (`IDE_WORKING_ON`). Navigate testing uses `emulator.js action --type goto` (not a hold wait). If `HUB_LIVE_OFF`, file poll + refresh is the fallback.
 
 If mode is **desktop** (this computer), the agent MUST:
 
@@ -68,6 +69,7 @@ If mode is **desktop** (this computer), the agent MUST:
    - `--holdTimeoutMs 600000`
    - hold duration must come from `--holdTimeoutMs`, not generic `--timeout`
    - include `--acceptLabel` so user can explicitly confirm done from toolbar
+   - Remind reviewers: Draw starts OFF; use **Test first** to hide the form and click through the app, then **Resume feedback** before Accept/Submit.
 3. The Shell call MUST use `block_until_ms: 660000` (11 min) so the agent blocks and waits.
    NEVER use `block_until_ms: 0` for holdForUserAnswer — that backgrounds it and the agent loses the wait.
 4. Hold is considered complete only when one of these happens:
