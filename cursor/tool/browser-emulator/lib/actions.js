@@ -235,8 +235,8 @@ async function runHoldForUserAnswer(page, action, timeoutMs) {
       canvas.style.inset = "0";
       canvas.style.width = "100vw";
       canvas.style.height = "100vh";
-      canvas.style.pointerEvents = "auto";
-      canvas.style.cursor = "crosshair";
+      canvas.style.pointerEvents = "none";
+      canvas.style.cursor = "default";
       canvas.style.touchAction = "none";
       overlayRoot.appendChild(canvas);
 
@@ -380,8 +380,10 @@ async function runHoldForUserAnswer(page, action, timeoutMs) {
       ];
       let currentColor = "#ef4444";
       let brushSize = 4;
-      let drawEnabled = true;
+      // Default OFF so the page stays clickable until the reviewer enables draw.
+      let drawEnabled = false;
       let drawTool = "pen";
+      let testingFirst = false;
       let eraserEnabled = false;
       let eraserMode = "page";
       let fillShape = false;
@@ -446,7 +448,9 @@ async function runHoldForUserAnswer(page, action, timeoutMs) {
       });
       brushGroup.appendChild(sizeInput);
 
-      const toggleBtn = makeButton("Draw: ON");
+      const toggleBtn = makeButton("Draw: OFF");
+      canvas.style.pointerEvents = "none";
+      canvas.style.cursor = "default";
       const previousOverflow = {
         html: document.documentElement.style.overflow || "",
         body: document.body.style.overflow || ""
@@ -461,16 +465,22 @@ async function runHoldForUserAnswer(page, action, timeoutMs) {
         }
       };
       const preventCanvasScroll = (event) => {
-        if (!drawEnabled) return;
+        if (!drawEnabled || testingFirst) return;
         event.preventDefault();
       };
       canvas.addEventListener("wheel", preventCanvasScroll, { passive: false });
-      setScrollLocked(drawEnabled);
-      toggleBtn.addEventListener("click", () => {
-        drawEnabled = !drawEnabled;
+      setScrollLocked(false);
+      const applyDrawPointerState = () => {
+        const capture = drawEnabled && !testingFirst;
+        canvas.style.pointerEvents = capture ? "auto" : "none";
+        canvas.style.cursor = capture ? "crosshair" : "default";
+        setScrollLocked(capture);
         toggleBtn.textContent = drawEnabled ? "Draw: ON" : "Draw: OFF";
-        canvas.style.pointerEvents = drawEnabled ? "auto" : "none";
-        setScrollLocked(drawEnabled);
+      };
+      toggleBtn.addEventListener("click", () => {
+        if (testingFirst) return;
+        drawEnabled = !drawEnabled;
+        applyDrawPointerState();
       });
       selectionGroup.appendChild(toggleBtn);
 
@@ -609,12 +619,66 @@ async function runHoldForUserAnswer(page, action, timeoutMs) {
       acceptBtn.style.fontWeight = "700";
       acceptBtn.style.background = "#059669";
       acceptBtn.style.border = "1px solid #047857";
+      const testFirstBtn = makeButton("Test first");
+      testFirstBtn.title = "Hide form and unlock the page so you can test, then resume feedback";
+      testFirstBtn.style.padding = "7px 12px";
+      testFirstBtn.style.fontWeight = "700";
+      testFirstBtn.style.background = "#b45309";
+      testFirstBtn.style.border = "1px solid #92400e";
       const actionButtons = document.createElement("div");
       actionButtons.style.display = "flex";
+      actionButtons.style.flexWrap = "wrap";
       actionButtons.style.gap = "8px";
+      actionButtons.appendChild(testFirstBtn);
       actionButtons.appendChild(acceptBtn);
       actionButtons.appendChild(submitBtn);
       footer.appendChild(actionButtons);
+
+      const resumeDock = document.createElement("button");
+      resumeDock.type = "button";
+      resumeDock.id = "__browser-emulator-test-first-dock";
+      resumeDock.setAttribute("aria-label", "Resume feedback");
+      resumeDock.title = "Done testing — resume feedback form";
+      resumeDock.style.cssText = [
+        "position:fixed",
+        "display:none",
+        "z-index:2147483647",
+        "pointer-events:auto",
+        "right:16px",
+        "bottom:16px",
+        "min-width:48px",
+        "height:48px",
+        "padding:0 14px",
+        "border-radius:999px",
+        "border:2px solid rgba(245,158,11,.75)",
+        "background:rgba(20,24,31,.96)",
+        "color:#fbbf24",
+        "box-shadow:0 8px 22px rgba(0,0,0,.4)",
+        "font:700 12px/1 Segoe UI,sans-serif",
+        "cursor:pointer",
+        "align-items:center",
+        "gap:8px"
+      ].join(";");
+      resumeDock.innerHTML = '<span style="font-size:16px;line-height:1;">↩</span><span>Resume feedback</span>';
+      overlayRoot.appendChild(resumeDock);
+
+      const setTestingFirst = (next) => {
+        testingFirst = Boolean(next);
+        if (testingFirst) {
+          toolbar.style.display = "none";
+          resumeDock.style.display = "inline-flex";
+          const zoneOutline = document.getElementById("__browser-emulator-zone-outline");
+          if (zoneOutline) zoneOutline.style.display = "none";
+        } else {
+          toolbar.style.display = "";
+          resumeDock.style.display = "none";
+          const zoneOutline = document.getElementById("__browser-emulator-zone-outline");
+          if (zoneOutline) zoneOutline.style.display = "";
+        }
+        applyDrawPointerState();
+      };
+      testFirstBtn.addEventListener("click", () => setTestingFirst(true));
+      resumeDock.addEventListener("click", () => setTestingFirst(false));
 
       const ctx = canvas.getContext("2d");
       if (ctx) {
@@ -921,11 +985,13 @@ async function runHoldForUserAnswer(page, action, timeoutMs) {
         submission: null,
         prepareForCapture: () => {
           toolbar.style.display = "none";
+          resumeDock.style.display = "none";
           const zoneOutline = document.getElementById("__browser-emulator-zone-outline");
           if (zoneOutline) zoneOutline.style.display = "none";
           canvas.style.pointerEvents = "none";
         },
         cleanup: () => {
+          testingFirst = false;
           setScrollLocked(false);
           onToolbarDragEnd();
           window.removeEventListener("resize", onResize);
@@ -1123,13 +1189,50 @@ async function applyAction(page, action, timeoutMs) {
       await page.waitForTimeout(Number(action.ms || 500));
       return `waited ${Number(action.ms || 500)}ms`;
 
+    case "setViewport": {
+      const width = Number(action.width);
+      const height = Number(action.height);
+      if (!Number.isFinite(width) || width < 1 || !Number.isFinite(height) || height < 1) {
+        throw new Error("setViewport requires --width and --height");
+      }
+      await page.setViewportSize({
+        width: Math.round(width),
+        height: Math.round(height)
+      });
+      return `set viewport ${Math.round(width)}x${Math.round(height)}`;
+    }
+
     case "goto":
       if (!action.url) throw new Error("goto requires url");
       {
         const beforeDom = String(action.expectDomChange || "").trim().toLowerCase() === "true"
           ? await page.content()
           : "";
-      await page.goto(action.url, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
+        try {
+          await page.goto(action.url, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
+        } catch (error) {
+          const message = String((error && error.message) || error || "");
+          const currentUrl = page.url() || "";
+          let currentHost = "";
+          let targetHost = "";
+          let currentPath = "";
+          let targetPath = "";
+          try {
+            currentHost = new URL(currentUrl).hostname.toLowerCase();
+            targetHost = new URL(String(action.url)).hostname.toLowerCase();
+            currentPath = new URL(currentUrl).pathname.replace(/\/$/, "");
+            targetPath = new URL(String(action.url)).pathname.replace(/\/$/, "");
+          } catch {
+            // keep empty
+          }
+          const onTarget =
+            message.toLowerCase().includes("timeout") &&
+            currentHost &&
+            targetHost &&
+            currentHost === targetHost &&
+            currentPath === targetPath;
+          if (!onTarget) throw error;
+        }
         await verifyActionExpectations(page, action, timeoutMs, beforeDom);
       }
       return `navigated ${action.url}`;
@@ -1140,13 +1243,19 @@ async function applyAction(page, action, timeoutMs) {
         const beforeDom = String(action.expectDomChange || "").trim().toLowerCase() === "true"
           ? await page.content()
           : "";
-        await page.evaluate(code => {
+        const evaluated = await page.evaluate(code => {
           // eslint-disable-next-line no-eval
-          window.eval(code);
+          return window.eval(code);
         }, String(action.script));
         await verifyActionExpectations(page, action, timeoutMs, beforeDom);
+        if (evaluated === undefined) return "evaluated page script";
+        if (typeof evaluated === "string") return evaluated;
+        try {
+          return JSON.stringify(evaluated);
+        } catch {
+          return String(evaluated);
+        }
       }
-      return "evaluated page script";
 
     case "hold":
     case "holdForUserAnswer":

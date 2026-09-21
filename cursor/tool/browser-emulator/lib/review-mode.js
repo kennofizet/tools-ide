@@ -96,7 +96,7 @@ function assertHoldPath({ command, actionType, mode }) {
   if (!mode) return;
   const type = String(actionType || "").trim();
   const isCdpHold = command === "action" && (type === "hold" || type === "holdForUserAnswer");
-  const isHandsFreeCmd = command === "hands-free" || command === "hands-free-reload" || command === "phone-review" || command === "phone-reload";
+  const isHandsFreeCmd = command === "hands-free" || command === "hands-free-reload" || command === "hands-free-watch" || command === "phone-review" || command === "phone-reload";
 
   if (mode === "hands-free" && isCdpHold) {
     const error = new Error(

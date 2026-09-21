@@ -23,6 +23,30 @@ async function isCdpEndpointUp(endpoint) {
   }
 }
 
+async function connectOverCdpWithRetry(chromium, endpoint, { attempts = 2, delayMs = 2000, timeoutMs = 25000 } = {}) {
+  let lastError = null
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    let timer = null
+    try {
+      return await Promise.race([
+        chromium.connectOverCDP(endpoint),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`connectOverCDP timed out after ${timeoutMs}ms`)), timeoutMs)
+        })
+      ])
+    } catch (error) {
+      lastError = error
+      if (attempt === attempts)
+        break
+      await sleep(delayMs * attempt)
+    } finally {
+      if (timer)
+        clearTimeout(timer)
+    }
+  }
+  throw lastError
+}
+
 async function waitForCdpEndpoint(endpoint, timeoutMs) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
@@ -42,6 +66,27 @@ function resolveBrowserLaunchPath(browserPath, browserName) {
   return getWindowsEdgePath();
 }
 
+function resolveCdpUserDataDir(userDataDir, cwd = process.cwd()) {
+  if (!userDataDir) return path.resolve(cwd, "./output/live-edge-profile");
+  return path.resolve(cwd, userDataDir);
+}
+
+function buildCdpLaunchArgs({ port, userDataDir, cwd }) {
+  const profileDir = resolveCdpUserDataDir(userDataDir, cwd);
+  return {
+    profileDir,
+    args: [
+      `--remote-debugging-port=${port}`,
+      "--remote-debugging-address=127.0.0.1",
+      "--remote-allow-origins=*",
+      `--user-data-dir=${profileDir}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "about:blank"
+    ]
+  };
+}
+
 function launchBrowserWithCdp({
   browserPath,
   browserName,
@@ -50,18 +95,24 @@ function launchBrowserWithCdp({
   detached = true
 }) {
   const executable = resolveBrowserLaunchPath(browserPath, browserName);
-  const profileDir = userDataDir || path.resolve("./output/live-edge-profile");
-  const args = [
-    `--remote-debugging-port=${port}`,
-    `--user-data-dir=${profileDir}`
-  ];
+  const { profileDir, args } = buildCdpLaunchArgs({
+    port,
+    userDataDir,
+    cwd: process.cwd()
+  });
   const child = spawn(executable, args, {
     detached,
-    stdio: detached ? "ignore" : "inherit"
+    stdio: detached ? "ignore" : "inherit",
+    windowsHide: false,
+    cwd: process.cwd()
+  });
+  child.on("error", () => {
+    // spawn errors surface as a missing CDP endpoint after polling
   });
   if (detached) {
     child.unref();
   }
+  return { pid: child.pid, profileDir, executable };
 }
 
 async function ensureLiveCdpEndpoint({
@@ -101,7 +152,7 @@ async function ensureLiveCdpEndpoint({
     // eslint-disable-next-line no-await-in-loop
     await sleep(700);
     // eslint-disable-next-line no-await-in-loop
-    availableAfterStart = await waitForCdpEndpoint(endpoint, timeoutMs);
+    availableAfterStart = await waitForCdpEndpoint(endpoint, Math.max(Number(timeoutMs) || 0, 20000));
     if (availableAfterStart) break;
   }
   return {
@@ -179,6 +230,9 @@ async function pickPageFromBrowser(browser, { matchUrl, timeoutMs }) {
 
 module.exports = {
   pickPageFromBrowser,
-  ensureLiveCdpEndpoint
+  ensureLiveCdpEndpoint,
+  resolveCdpUserDataDir,
+  buildCdpLaunchArgs,
+  connectOverCdpWithRetry
 };
 

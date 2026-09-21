@@ -146,7 +146,7 @@ Live mode details:
 - uses CDP session reuse so browser state continues across commands
 - browser is not force-closed after each step
 - does not force navigation to `config.url` unless you explicitly pass `--url` (or case target URL)
-- if CDP endpoint is down, tool can auto-start browser when `cdpAutoStart` is enabled
+- if CDP endpoint is down, tool can auto-start browser when `cdpAutoStart` is enabled (absolute user-data-dir, `--remote-allow-origins=*`, dedicated profile — relative dirs on Windows can miss `:9224`)
 - if first CDP auto-start attempt is not ready yet, tool retries launch (`cdpStartupRetries`), and retry can switch to detached mode (`cdpRetryLaunchDetached`)
 - per-case runs force step captures by default (`forceStepCapture: true`)
 
@@ -288,7 +288,7 @@ Commands:
 node emulator.js review-mode --mode hands-free
 node emulator.js hands-free --config config.json --origin http://127.0.0.1 --hostHeader app.example.test --holdTimeoutMs 600000 --runTag hands-free-1
 node emulator.js hands-free-reload --config config.json --state progress
-node emulator.js hands-free-reload --config config.json --state listening
+node emulator.js hands-free-reload --config config.json --state listening --answer "Result for Box 1"
 node emulator.js hands-free-stop --config config.json
 ```
 
@@ -296,21 +296,26 @@ Agent workflow:
 
 1. Confirm saved mode is `hands-free`.
 2. Run `hands-free` and **block** (`block_until_ms` >= `--holdTimeoutMs`).
-3. Open the printed `HANDS_FREE_URL` on the other device (login, go to the edited page).
+3. Open the printed `HANDS_FREE_OPEN` on the other device (includes `?emu_hold=` session token; login, go to the edited page).
 4. Watch for `HANDS_FREE_HOLD_RECEIVED` / `HANDS_FREE_HOLD_TIMEOUT`.
 5. Read `output/runs/<runTag>/hold-answer.json` plus `hold-composite.jpg` / `hold-annotation.png`.
-6. On feedback: `hands-free-reload --state progress`, edit, `hands-free-reload --state listening`, then `hands-free` wait again.
+6. On feedback: badge becomes **IN PROGRESS** as soon as Submit/Accept is sent. Keep `--state progress` while the IDE is working (Vite HMR live-updates the page; no full refresh when the hub is up). When the reviewer should look again, `--state listening` (badge **WAIT**), then `hands-free` wait. Do not start a new wait while you are still editing.
 7. `hands-free-stop` when the other-device session is finished.
 
 Notes:
 
 - `--origin` is the local server the proxy forwards to. `--hostHeader` is for name-based vhosts.
+- Treat `HANDS_FREE_OPEN` as a **capability URL** (hold submit + agent wake). Do not share the bare tunnel host without the `emu_hold` token. `POST /__emu/hold` returns 401 without it.
+- Upstream HTTPS (`--extraOrigin`) verifies TLS certificates by default. Use `--insecureUpstream true` only for local self-signed certs.
 - The other device must not load loopback or other local origins. The proxy rewrites those to same-origin paths (`/@vite/...`, `/__emu/x/0`, `/__emu/x/1`) so Chrome Private Network Access does not block the tunnel.
 - Vite-style modules (`/@...`, `/src/...`, `/resources/...`, `?import`, root source files) go to the dev server. Public files (`/*.css`, `/sw*.js`, `/js/`, `/build/`) stay on the app server.
 - Pass extra API hosts with `--extraOrigin` (comma list) or `--backendOrigin` (first extra origin). Do not guess extra hosts from the app hostname. Same-origin `/api/...` is also forwarded to the first extra origin.
 - Extra origins are rewritten to `/__emu/x/0`, `/__emu/x/1`, … . `/__emu/backend` is an alias of the first extra origin.
 - Runtime code must not hardcode product hostnames or machine paths. Put those in gitignored `*.local.json` and `flow/domain/<your-domain>.md`.
-- If the other device gets `503` or the trycloudflare host does not resolve, the quick tunnel dropped. Restart `hands-free` and open the new `HANDS_FREE_URL`. Do not keep using the old hostname.
+- If the other device gets `503`, Cloudflare **Error 1033**, or the trycloudflare host does not resolve, the quick tunnel is not ready or dropped. Wait for `HANDS_FREE_TUNNEL_READY`, or restart `hands-free` and open the new `HANDS_FREE_URL`. Do not keep using an old hostname. Health checks fall back to DNS `1.1.1.1` when Node `getaddrinfo` cannot resolve trycloudflare hosts.
+- If `cursor/tool/socket-server` is healthy (`GET /health`), hands-free uses it for live updates. Look for `HUB_LIVE_ON`. After a code edit, `hands-free-reload --state progress|listening` prints `HUB_LIVE_SENT` and **does not reload the page**. The socket updates the WAIT / IN PROGRESS badge. App UI updates through Vite HMR. The proxy rewrites `@vite/client` so HMR uses the tunnel host, reconnects on websocket drop instead of `location.reload()`, **rewrites Vite `full-reload` websocket messages into a single-module `js-update`** (payload path, or the last seen `.vue` — never the whole seen graph), and **rewrites compiled `.vue` HMR to always `reload` the component** so static templates update without changing app source (`rewrite-v23+`). Overlay WAIT must not trigger a live patch. Do not edit the product app to make review HMR work. Full navigation happens only when the hub is down (`HUB_LIVE_OFF`). When the hub is up, hands-free also starts sibling `cursor/tool/ide-working` (`IDE_WORKING_ON`, default `http://127.0.0.1:8788/`) and publishes `ide.task`. Overlay stays WAIT / IN PROGRESS; title / content / stream render in that viewer.
+- Badge: **WAIT** while an agent wait is active (reviewer should act) and after **Accept**. **IN PROGRESS** when Submit happens during wait, or when Submit/Accept auto-starts the agent because no wait was running. `hands-free-watch` prints `HANDS_FREE_HOLD_WAKE` so the agent session continues.
+- The hands-free form can be dragged by the title row and resized from the bottom-right corner. Size/position are remembered on that device.
 - Default `--stripScript` is empty. Pass a filename only when the app injects its own overlay that would conflict with the tool form.
 - Do not use `--background true` for the wait. The serve process is detached automatically; the wait command must stay in the foreground.
 - `phone-review` / `phone-reload` / `phone-stop` remain as aliases.
@@ -323,7 +328,8 @@ This is the final step of every UI edit task **when review mode is desktop**. Th
 What it does:
 
 - scrolls/focuses a "zone" on screen via `--selector`
-- overlays a full-screen drawing canvas (pointer drawing) + a small toolbar
+- overlays a drawing canvas + a small toolbar (Draw starts **OFF** so the page stays clickable)
+- toolbar includes **Test first** — hides the form and unlocks the page; a **Resume feedback** dock brings the form back
 - toolbar supports explicit draw scope buttons (`Full`, `Zone`) so drawing can stay full-screen when needed
 - user draws annotations and types a note, then clicks "Submit to Agent"
 - emulator saves:
@@ -431,7 +437,8 @@ node emulator.js run --config config.json --useCdp true --cdpEndpoint "http://12
 - `waitForSelector` (requires `selector`)
 - `waitForTimeout` (optional `ms`)
 - `goto` (requires `url`)
-- `evaluate` (requires `script`)
+- `evaluate` (requires `script`; action result is the script return value as string/JSON, not a fixed "evaluated page script")
+- `setViewport` (requires `--width` and `--height` in CSS pixels; use this before checking `@media` layouts)
 - `hold` / `holdForUserAnswer`
 
 ## Output

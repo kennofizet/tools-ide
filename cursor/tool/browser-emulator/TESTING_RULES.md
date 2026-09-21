@@ -24,6 +24,7 @@ If the CLI prints `REVIEW_MODE_REQUIRED`, stop and ask. Do not guess.
 - Default browser mode is Edge CDP attach (best/recommended); reuse matching open domain tab before opening new tab.
 - `--background true` is supported for all modes (Edge/CDP and local launch).
 - For any `node emulator.js ...` command, keep timeout between `1000` and `8000` ms.
+- On Windows PowerShell, `--selector` quotes are stripped and the value is split on spaces. Pass **one class token** as the click target (put that class on the element itself). Never `--selector .parent .child`.
 - For CDP auto-start reliability, use startup retries (`--cdpStartupRetries 2` or more).
 - If first Edge launch is slow/fails, allow retry in detached mode (`--cdpRetryLaunchDetached true`).
 - Always check old domain history before new actions.
@@ -80,6 +81,9 @@ If the CLI prints `REVIEW_MODE_REQUIRED`, stop and ask. Do not guess.
    - after the tab exists: `--cdpNavigate false`, omit `--url`, and `--cdpAutoOpenIfMissing false` so the current page is not reloaded or duplicated
    - for first-time public runs when no tab exists yet, `--cdpAutoOpenIfMissing true` is OK
    - for startup reliability when the dedicated-port browser is not running, keep `--cdpAutoStart true --cdpStartupRetries 2 --cdpRetryLaunchDetached true`
+   - CDP auto-start must use an **absolute** `--user-data-dir` plus `--remote-allow-origins=*`. A relative profile path on Windows can attach to everyday Edge and never open `:9224`.
+   - `connectOverCDP` is capped at 25s per attempt (2 attempts). An 8s cap was too short and left a zombie attach that wedged `:9224`. If `/json/version` answers but attach still times out, wait and retry once; do not overlap attaches.
+   - If attach stays hung after that, the dedicated Edge CDP session is wedged. Relaunch **only** the `:9224` profile (`output/live-edge-profile-9224`), not everyday Edge. Login lives in that profile. Then attach again with `--cdpNavigate false`.
 9. Default attach matching:
    - if `--attachMatchUrl` is empty, tool should match by target URL domain first
    - only open/navigate a new tab when no matching domain tab exists
@@ -89,6 +93,7 @@ If the CLI prints `REVIEW_MODE_REQUIRED`, stop and ask. Do not guess.
    - `--agentOverlayEnabled true`
    - `--agentOverlayText "Agent in progress"`
    - `--agentOverlayDisableClicks true`
+   - Never run two `emulator.js` CDP attaches at once on the same port. A leftover session makes overlay `evaluate` hang. Overlay mount/lock/remove is capped at 4s and skipped if it times out (`Agent overlay skipped`).
 11. If command should be non-interactive/background:
    - append `--background true` (works on every mode)
 
@@ -120,6 +125,7 @@ If the CLI prints `REVIEW_MODE_REQUIRED`, stop and ask. Do not guess.
 5. **Run one safe action**
    - command type: `action`
    - example: `waitForSelector body`
+   - for phone CSS (`max-width` media queries), first `setViewport --width 390 --height 844` on the CDP tab; desktop window size does not apply those rules
 6. **Run scenario actions**
    - command type: `run` (actions array in config) or multiple `action` calls
 7. **Validate artifacts**
@@ -267,6 +273,7 @@ Required workflow:
    - `output/runs/<runTag>/hold-composite-*.png` (page + drawing combined)
    - `zoneFound` in hold answer/agent state must be `true`
    - mandatory: open/read BOTH hold images (`hold-annotation` + `hold-composite`) before deciding next action
+   - if `strokesCount` > 0, map the drawing to the on-page region in the composite (which card, leftover space vs empty cell) before changing code. Do not treat a circled leftover area as a request to restyle a different empty module.
 7. If `zoneFound=false` or hold annotation is blank/unrelated:
    - treat as failed navigation, not user feedback on UI
    - run focused pre-hold navigation actions (open detail row, switch tab/panel, `waitForSelector` target)
@@ -315,19 +322,24 @@ Required workflow:
    - `output/runs/<runTag>/hold-composite.jpg`
    - `output/runs/<runTag>/hold-annotation.png` (if drawn)
 6. Feedback loop:
-   - `hands-free-reload --state progress`
-   - edit
-   - `hands-free-reload --state listening`
-   - `hands-free` wait again
+   - Submit/Accept immediately sets the badge to **IN PROGRESS**. Follow with `hands-free-reload --state progress` while the IDE is working. The hub keeps the page live (Vite HMR); do not full-refresh.
+   - When the reviewer should look again: `hands-free-reload --state listening` (badge **WAIT**)
+   - `hands-free` wait again. Never start wait while you are still editing.
 7. `hands-free-stop` when done with the other-device session.
 
 Hard rules:
 
 - NEVER use desktop CDP hold as a substitute for another-device review.
 - NEVER background the `hands-free` wait.
+- NEVER leave a hands-free session on `--startOnly`. That only serves the tunnel. Submit/Accept cannot start the agent until `hands-free` wait is blocking. Viewer `:8788` is not the IDE starting.
+- After wait ends, start `hands-free-watch` in the background (`HANDS_FREE_HOLD_WAKE`) so Submit without a wait loop still auto-starts the agent. Do not show “Agent is not in listen.” on `:8788`.
 - NEVER invent a project-local hold JSON watcher when this command exists.
 - If saved mode is `hands-free`, refuse CDP hold and use this path.
-- Chrome blocks tunnel pages from loading loopback. Restart `hands-free` if the other device still requests `127.0.0.1` or other local origins. Pass `--extraOrigin` for API hosts; do not guess names from the app vhost. If the other device gets `503` or the trycloudflare host dies, restart `hands-free` and use the new URL.
+- If a notification badge or other product text shows `__emu-origin-map` / `/__emu/hold.js`, the proxy wrapped a non-document `text/html` API body. Capability `rewrite-v23+` injects those scripts only into full HTML documents. Keep-tunnel restart the proxy; do not treat that as an app bug. Pass `--extraOrigin` for API hosts; do not guess names from the app vhost. If the other device gets `503`, Cloudflare **Error 1033**, `ERR_NAME_NOT_RESOLVED`, or Chrome “can’t reach this page”, the trycloudflare host is dead or not in DNS. **Do not keep using that hostname.** `hands-free-stop`, start a new tunnel, wait for `HANDS_FREE_TUNNEL_READY`, and send the new `HANDS_FREE_URL`. Public health checks resolve via `1.1.1.1` when Node `getaddrinfo` fails. `hands-free --startOnly` must wait for `HANDS_FREE_TUNNEL_READY` before treating the URL as usable.
+- Navigate testing is **not** a hands-free wait. Use `node emulator.js action --type goto --actionUrl <url>` (then `waitForSelector`) on the dedicated CDP session. `ide-working` (`:8788`) must show title/content/stream for those steps. Do not ask the human to type routes instead of the tool.
+- If the socket hub is healthy, `hands-free` prints `HUB_LIVE_ON` and live updates go over the socket. **Do not full-refresh after edits** while the hub is up: `hands-free-reload` only publishes `live.state`. Vite HMR must stay on the tunnel host. The proxy converts Vite `full-reload` into a **single-module** `js-update` (payload path, or the last seen `.vue` — never every seen module) and forces Vue SFC HMR to `reload` (not rerender-only) so static templates live-update without product-source edits (`rewrite-v23+`, keep-tunnel restart). Overlay WAIT must not blast HMR. If the other device still full-refreshes or stays stale after that, restart `hands-free` so the new capability is serving. Badge is **WAIT** while a wait loop is active and after **Accept**. **IN PROGRESS** only if Submit arrives during that wait. Submit/Accept still publishes `ide.task` (Agent started) to ide-working even when no wait loop is listening. `--startOnly` is not listen; the agent must then block on `hands-free` wait or Submit cannot start real work. With the hub socket up, the overlay must not poll `/__emu/version`. Task title / content / stream belong in sibling `cursor/tool/ide-working` (`IDE_WORKING_ON`, `:8788`). On WAIT, the overlay also pins the last `--answer` into Box 1 (a host-page feature slot when present) so the other device can read the result; do not write that copy into the product app. If `HUB_LIVE_OFF`, file poll + refresh is the fallback.
+- Share **`HANDS_FREE_OPEN`** (includes `?emu_hold=`), not only the bare tunnel host. That URL is a capability link: it can submit hold feedback and wake the local agent. `POST /__emu/hold` requires the session hold token (query, header, body, or cookie set after opening `HANDS_FREE_OPEN`).
+- Upstream HTTPS to `--extraOrigin` verifies certificates by default. Pass `--insecureUpstream true` only for local self-signed certs.
 - If the other device console shows module scripts with MIME `text/html`, a Vite path was sent to the app server. Restart `hands-free` so Vite modules go to the dev server and public files stay on the app server.
 
 ## 4g) Hold UX Defaults (Public-Friendly)
@@ -335,6 +347,13 @@ Hard rules:
 Use these hold defaults for all UI review runs unless explicitly overridden by user:
 
 - Toolbar is movable by dragging the title row ("Drag toolbar").
+- Hands-free review form default is **top-right** (below the WAIT badge), not bottom-left, so it does not cover common page hover targets (for example a mosaic card or floating action). It can still be moved (title row) and resized (bottom-right handle). Drag the form to a screen edge to collapse it into a **movable border icon**; tap the icon to open the form again. Layout is remembered on the device (`__emu-hold-form-v3`).
+- Desktop CDP hold defaults to **Draw: OFF** so the page stays clickable/scrollable when the form appears.
+- Desktop hold includes a **Test first** button. It hides the form, unlocks the page, and shows a **Resume feedback** dock. Reviewers must use this when they need to click through the app before Accept/Submit. Do not treat “form blocked my testing” as product feedback — tell them to use Test first.
+- Keep Draw: OFF while checking hover animations. Draw: ON puts a full-screen canvas over the page and blocks pointerenter.
+- Never paint `--answer` into the host app. Clear `[data-emu-answer]` instead. Review notes stay in the overlay form.
+- Hands-free `hold-composite.jpg` must stay readable for frost/smoothness review: capture at up to 960px wide JPEG quality 0.82. Do not cap that capture at 480px.
+- Pointer-follow animations: dispatch `pointermove` on the **parent interactive module**, not only a nested canvas/child.
 - Default draw scope is full screen.
 - Zone selector is still required for navigation validation, even when draw scope is full.
 - Use zone-only draw mode only when reviewer explicitly asks.
@@ -343,6 +362,7 @@ Hard rule:
 
 - Do not assume "no note text" means no feedback if drawing strokes are present.
 - Treat drawn annotations as actionable feedback and continue loop automatically.
+- If a hold note says “apply the same” to another region, map it to **style of that region’s live page**, not to copy an illustration from the annotated cell, unless the note names that illustration.
 
 ## 5) Common Domain Warnings
 

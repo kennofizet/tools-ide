@@ -111,33 +111,68 @@ function agentOverlayRuntime(payload) {
   }
 }
 
+function withTimeout(promise, ms, label) {
+  let timer
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    })
+  ]).finally(() => clearTimeout(timer))
+}
+
 async function setupAgentOverlay(page, { text, disableClicks, lockOnStart }) {
   const options = {
     text: text || "Agent in progress",
     disableClicks: Boolean(disableClicks),
     locked: Boolean(lockOnStart)
   };
-  await page.addInitScript(agentOverlayRuntime, {
-    command: "setup",
-    options
-  });
-  await page.evaluate(agentOverlayRuntime, {
-    command: "setup",
-    options
-  });
+  const budgetMs = 8000
+  await withTimeout(
+    page.addInitScript(agentOverlayRuntime, {
+      command: "setup",
+      options
+    }),
+    budgetMs,
+    "agent overlay addInitScript"
+  )
+  await withTimeout(
+    page.evaluate(agentOverlayRuntime, {
+      command: "setup",
+      options
+    }),
+    budgetMs,
+    "agent overlay evaluate"
+  )
 }
 
 async function setAgentOverlayLocked(page, locked) {
-  await page.evaluate(agentOverlayRuntime, {
-    command: "set-locked",
-    locked: Boolean(locked)
-  });
+  try {
+    await withTimeout(
+      page.evaluate(agentOverlayRuntime, {
+        command: "set-locked",
+        locked: Boolean(locked)
+      }),
+      8000,
+      "agent overlay lock"
+    )
+  } catch {
+    // SPA navigations (goto) can leave evaluate hung; do not fail the action.
+  }
 }
 
 async function removeAgentOverlay(page) {
-  await page.evaluate(agentOverlayRuntime, {
-    command: "remove"
-  });
+  try {
+    await withTimeout(
+      page.evaluate(agentOverlayRuntime, {
+        command: "remove"
+      }),
+      8000,
+      "agent overlay remove"
+    )
+  } catch {
+    // Best-effort cleanup after navigation / closed page.
+  }
 }
 
 module.exports = {

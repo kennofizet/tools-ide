@@ -2,6 +2,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const fs = require("fs");
+const { WebSocket, WebSocketServer } = require("ws");
 const { createHandsFreeProxy } = require("../lib/phone-review/proxy-server");
 const { extraPrefix, PROXY_CAPABILITY } = require("../lib/phone-review/public-rewrite");
 const { writeTextFile } = require("../lib/io");
@@ -21,7 +22,29 @@ function originOf(server) {
   const vite = await listen((req, res) => {
     if (req.url.startsWith("/@vite/client")) {
       res.writeHead(200, { "Content-Type": "application/javascript" });
-      res.end('const socketHost = `${"127.0.0.1" || importMetaUrl.hostname}:${hmrPort || importMetaUrl.port}${"/"}`;\n');
+      res.end(
+        [
+          'const socketHost = `${"127.0.0.1" || importMetaUrl.hostname}:${hmrPort || importMetaUrl.port}${"/"}`;',
+          "await waitForSuccessfulPing(protocol, hostAndPath);",
+          "        location.reload();",
+          "const pageReload = debounceReload(50);"
+        ].join("\n")
+      );
+      return;
+    }
+    if (req.url.startsWith("/resources/js/Foo.vue")) {
+      res.writeHead(200, { "Content-Type": "application/javascript" });
+      res.end(
+        [
+          "export default {}",
+          "export const _rerender_only = true",
+          "import.meta.hot.accept(mod => {",
+          "  const { default: updated, _rerender_only } = mod",
+          "  if (_rerender_only) { __VUE_HMR_RUNTIME__.rerender(updated.__hmrId, updated.render) }",
+          "  else { __VUE_HMR_RUNTIME__.reload(updated.__hmrId, updated) }",
+          "})"
+        ].join("\n")
+      );
       return;
     }
     if (req.url.startsWith("/src/main.js") || req.url.startsWith("/app.config.js")) {
@@ -32,8 +55,22 @@ function originOf(server) {
     res.writeHead(404);
     res.end("vite-miss");
   });
+  const viteWss = new WebSocketServer({ noServer: true, handleProtocols: () => "vite-hmr" });
+  vite.on("upgrade", (req, socket, head) => {
+    viteWss.handleUpgrade(req, socket, head, (ws) => {
+      ws.send(JSON.stringify({ type: "connected" }));
+      setTimeout(() => {
+        ws.send(JSON.stringify({ type: "full-reload", path: "*" }));
+      }, 80);
+    });
+  });
 
   const api = await listen((req, res) => {
+    if (/count/i.test(req.url || "")) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=UTF-8" });
+      res.end("0");
+      return;
+    }
     res.writeHead(200, { "Content-Type": "application/javascript" });
     res.end("window.apiReady=true;\n");
   });
@@ -134,6 +171,9 @@ function originOf(server) {
     const viteClient = await get("/@vite/client");
     if (viteClient.status !== 200) throw new Error(`vite client status ${viteClient.status}`);
     if (!viteClient.body.includes("location.host")) throw new Error("vite client missing location.host patch");
+    if (/await waitForSuccessfulPing\(protocol, hostAndPath\);\s*location\.reload\(\)/.test(viteClient.body)) {
+      throw new Error("proxied vite client still full-reloads on websocket drop");
+    }
     const rootJs = await get("/app.config.js");
     if (rootJs.status !== 200 || !/javascript/i.test(rootJs.type) || /<html/i.test(rootJs.body)) {
       throw new Error(`root js ${rootJs.status} ${rootJs.type}`);
@@ -144,14 +184,58 @@ function originOf(server) {
     if (sw.status !== 200 || /html/i.test(sw.type)) throw new Error(`sw ${sw.status} ${sw.type}`);
     const apiFallback = await get("/api/login");
     if (apiFallback.status !== 200) throw new Error(`api fallback ${apiFallback.status}`);
+    const countHtml = await get("/api/notification/list-by-mode.count");
+    if (countHtml.status !== 200) throw new Error(`count ${countHtml.status}`);
+    if (countHtml.body !== "0") throw new Error(`count body leaked rewrite ${countHtml.body.slice(0, 180)}`);
+    if (countHtml.body.includes("__emu-origin-map") || countHtml.body.includes("/__emu/hold.js")) {
+      throw new Error("hold scripts leaked into notification count");
+    }
     const version = await get("/__emu/version");
     const versionJson = JSON.parse(version.body);
     if (!versionJson.v) throw new Error("version payload");
+    if (versionJson.answer) throw new Error("version answer should be empty by default");
+    files.box1Answer = path.join(runDir, "box1-answer.txt");
+    fs.writeFileSync(files.box1Answer, "box1 hello");
+    const versionWithAnswer = JSON.parse((await get("/__emu/version")).body);
+    if (versionWithAnswer.answer !== "box1 hello") throw new Error("version missing box1 answer");
     const waitStarted = Date.now();
     const waited = await get("/__emu/version?wait=1&waitMs=300&since=1&sinceState=listening");
     const waitedMs = Date.now() - waitStarted;
     if (waitedMs < 200) throw new Error(`version wait returned too fast (${waitedMs}ms)`);
     JSON.parse(waited.body);
+    const vueMod = await get("/resources/js/Foo.vue");
+    if (vueMod.status !== 200) throw new Error(`vue module ${vueMod.status}`);
+    if (vueMod.body.includes("if (_rerender_only)")) throw new Error("proxied vue sfc still rerender-only");
+    if (!vueMod.body.includes("if (false)")) throw new Error("proxied vue sfc did not force component reload");
+    if (vueMod.body.includes("_rerender_only = true")) throw new Error("proxied vue sfc still exports rerender-only true");
+    const hmrMessages = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("hmr convert timeout")), 4000);
+      const got = [];
+      const client = new WebSocket(`ws://127.0.0.1:${proxy.address().port}/`, "vite-hmr");
+      client.on("message", (data) => {
+        got.push(JSON.parse(String(data)));
+        if (got.some((msg) => msg.type === "update")) {
+          clearTimeout(timer);
+          client.close();
+          resolve(got);
+        }
+      });
+      client.on("error", (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+    if (hmrMessages.some((msg) => msg.type === "full-reload")) {
+      throw new Error("proxy forwarded vite full-reload");
+    }
+    const update = hmrMessages.find((msg) => msg.type === "update");
+    if (
+      !update ||
+      !Array.isArray(update.updates) ||
+      !update.updates.some((item) => item.type === "js-update" && item.path === "/resources/js/Foo.vue")
+    ) {
+      throw new Error(`hmr convert ${JSON.stringify(update)}`);
+    }
     console.log("PROXY_SMOKE_OK");
   } finally {
     proxy.close();

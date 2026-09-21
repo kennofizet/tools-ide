@@ -1,4 +1,4 @@
-const PROXY_CAPABILITY = "rewrite-v7";
+const PROXY_CAPABILITY = "rewrite-v23";
 
 function extraPrefix(index) {
   return `/__emu/x/${Number(index)}`;
@@ -187,11 +187,125 @@ function shouldRewriteContent(contentType) {
   return /html|javascript|ecmascript|json|css|xml|text\/plain/i.test(String(contentType || ""));
 }
 
+function isHtmlDocument(text) {
+  const s = String(text || "").trim();
+  if (!s) return false;
+  return /<!doctype\s+html/i.test(s) || /<html[\s>]/i.test(s) || /<head[\s>]/i.test(s) || /<\/body>/i.test(s);
+}
+
 function rewriteViteClient(js) {
-  return String(js || "")
+  let out = String(js || "")
     .replace(/const socketHost = `\$\{[^`]+\}`;/, "const socketHost = `${location.host}/`;")
     .replace(/const directSocketHost = ["'][^"']*["'];/, "const directSocketHost = `${location.host}/`;")
     .replace(/const serverHost = ["'][^"']*["'];/, "const serverHost = `${location.host}/`;");
+  out = out.replace(
+    /await waitForSuccessfulPing\(protocol, hostAndPath\);\s*location\.reload\(\);/g,
+    "await waitForSuccessfulPing(protocol, hostAndPath);\n        try { socket = setupWebSocket(protocol, hostAndPath); } catch (err) {}"
+  );
+  out = out.replace(
+    /const pageReload = debounceReload\(50\);/g,
+    `const pageReload = debounceReload(50);
+function emuNormVitePath(raw) {
+  var p = String(raw || "").replace(/\\\\/g, "/");
+  var idx = p.search(/\\/(resources|src)\\//);
+  if (idx >= 0) p = p.slice(idx);
+  if (p && p.charAt(0) !== "/" && p.indexOf(":") < 0) p = "/" + p;
+  return p.split("?")[0];
+}
+function emuLiveFullReload(payload) {
+  var p = emuNormVitePath(payload && payload.path);
+  if (p === "*" || !/\\.(vue|[cm]?js|ts|tsx|jsx|css|scss)$/i.test(p)) {
+    console.debug("[vite] full-reload skipped (live)");
+    return;
+  }
+  console.debug("[vite] full-reload -> hmr", p);
+  return handleMessage({
+    type: "update",
+    updates: [{
+      type: /\\.(css|scss)(\\?|$)/i.test(p) ? "css-update" : "js-update",
+      path: p,
+      acceptedPath: p,
+      timestamp: Date.now()
+    }]
+  });
+}
+try { window.__emuViteLive = function () { return; }; } catch (err) {}`
+  );
+  out = out.replace(/else \{\s*pageReload\(\);\s*\}/g, "else { return emuLiveFullReload(payload); }");
+  out = out.replace(/window\.location\.reload\(\);/g, "/* live: skip first-update full reload */void 0;");
+  return out;
+}
+
+function isVueModulePath(urlPath) {
+  let pathOnly = String(urlPath || "").split("?")[0];
+  try {
+    pathOnly = decodeURIComponent(pathOnly);
+  } catch {
+    // keep raw path
+  }
+  return /\.vue$/i.test(pathOnly);
+}
+
+function rewriteVueSfcHmr(js) {
+  let out = String(js || "");
+  if (!/__VUE_HMR_RUNTIME__|_rerender_only/.test(out)) return out;
+  out = out.replace(/export\s+const\s+_rerender_only\s*=\s*(?:true|!0)/g, "export const _rerender_only = false");
+  out = out.replace(/\b_rerender_only\s*=\s*(?:true|!0)/g, "_rerender_only = false");
+  out = out.replace(/([,{]\s*)_rerender_only\s*:\s*(?:true|!0)/g, "$1_rerender_only: false");
+  out = out.replace(/if\s*\(\s*_rerender_only\s*\)/g, "if (false)");
+  return out;
+}
+
+function viteHotModulePath(urlPath) {
+  let pathOnly = String(urlPath || "").split("?")[0];
+  try {
+    pathOnly = decodeURIComponent(pathOnly);
+  } catch {
+    // keep raw path
+  }
+  pathOnly = pathOnly.replace(/\\/g, "/");
+  const idx = pathOnly.search(/\/(resources|src)\//);
+  if (idx >= 0) pathOnly = pathOnly.slice(idx);
+  else if (!pathOnly.startsWith("/resources/") && !pathOnly.startsWith("/src/")) return "";
+  if (/\/@vite\/|\/node_modules\/|\/@id\//.test(pathOnly)) return "";
+  if (!/\.(vue|[cm]?js|ts|tsx|jsx|css|scss)$/i.test(pathOnly)) return "";
+  return pathOnly;
+}
+
+function lastSeenHotModule(seenModules) {
+  const seen = seenModules instanceof Set ? [...seenModules] : [...(seenModules || [])];
+  let lastAny = "";
+  let lastVue = "";
+  seen.forEach((item) => {
+    const next = viteHotModulePath(item);
+    if (!next) return;
+    lastAny = next;
+    if (/\.vue$/i.test(next)) lastVue = next;
+  });
+  return lastVue || lastAny;
+}
+
+function convertViteHmrPayload(raw, seenModules) {
+  let msg;
+  try {
+    msg = JSON.parse(String(raw));
+  } catch {
+    return null;
+  }
+  if (!msg || msg.type !== "full-reload") return null;
+  const path = viteHotModulePath(msg.path) || lastSeenHotModule(seenModules);
+  if (!path) return null;
+  return JSON.stringify({
+    type: "update",
+    updates: [
+      {
+        type: /\.(css|scss)$/i.test(path) ? "css-update" : "js-update",
+        path,
+        acceptedPath: path,
+        timestamp: Date.now()
+      }
+    ]
+  });
 }
 
 function rewritePairsFrom({ viteOrigin, extraOrigins }) {
@@ -217,6 +331,7 @@ function rewriteHtml(html, { stripScripts, overlaySrc, pairs }) {
     out = out.replace(new RegExp(`<script[^>]*${escaped}[^>]*><\\/script>`, "gi"), "");
   });
   out = rewriteOrigins(out, pairs);
+  if (!isHtmlDocument(out)) return out;
   if (!out.includes("/*__emu-origin-map*/")) {
     const boot = originMapBootScript(pairs);
     if (/<head[^>]*>/i.test(out)) out = out.replace(/<head[^>]*>/i, match => `${match}${boot}`);
@@ -235,6 +350,9 @@ function rewriteBody(contentType, urlPath, text, pairs) {
   let out = rewriteOrigins(text, pairs);
   if (/@vite\/client/i.test(String(urlPath || "")) || /vite\/dist\/client/i.test(String(urlPath || ""))) {
     out = rewriteViteClient(out);
+  }
+  if (isVueModulePath(urlPath)) {
+    out = rewriteVueSfcHmr(out);
   }
   if (/html/i.test(String(contentType || ""))) {
     out = rewriteHtml(out, { pairs });
@@ -275,9 +393,13 @@ function openPathFromUrl(rawUrl) {
 module.exports = {
   PROXY_CAPABILITY,
   addUniqueOrigin,
+  convertViteHmrPayload,
+  lastSeenHotModule,
   detectOrigins,
   extraPrefix,
+  isHtmlDocument,
   isViteDevPath,
+  isVueModulePath,
   mergeDetectedOrigins,
   openPathFromUrl,
   originVariants,
@@ -287,5 +409,7 @@ module.exports = {
   rewriteOrigins,
   rewritePairsFrom,
   rewriteViteClient,
-  shouldRewriteContent
+  rewriteVueSfcHmr,
+  shouldRewriteContent,
+  viteHotModulePath
 };

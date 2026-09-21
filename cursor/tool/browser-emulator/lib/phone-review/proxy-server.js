@@ -3,6 +3,7 @@ const http = require("http");
 const https = require("https");
 const {
   PROXY_CAPABILITY,
+  convertViteHmrPayload,
   detectOrigins,
   extraPrefix,
   isViteDevPath,
@@ -11,8 +12,29 @@ const {
   rewriteOrigins,
   rewritePairsFrom,
   rewriteViteClient,
-  shouldRewriteContent
+  rewriteVueSfcHmr,
+  isVueModulePath,
+  shouldRewriteContent,
+  viteHotModulePath
 } = require("./public-rewrite");
+
+function loadWs() {
+  try {
+    return require("ws");
+  } catch {
+    try {
+      return require("../../socket-server/node_modules/ws");
+    } catch {
+      return null;
+    }
+  }
+}
+
+function pickViteHmrProtocol(protocols) {
+  const list = protocols && typeof protocols[Symbol.iterator] === "function" ? [...protocols] : [];
+  if (list.includes("vite-hmr")) return "vite-hmr";
+  return list[0] || false;
+}
 
 function parseOrigin(origin) {
   const url = new URL(origin);
@@ -56,11 +78,27 @@ function copyHeaders(source, extra = {}, opts = {}) {
   return headers;
 }
 
-function readLivePayload(files) {
+function readLivePayload(files, getOverlayRev) {
   const version = fs.existsSync(files.version) ? fs.readFileSync(files.version, "utf8").trim() : "0";
   const raw = fs.existsSync(files.status) ? fs.readFileSync(files.status, "utf8").trim() : "listening";
   const state = raw === "progress" ? "progress" : "listening";
-  return { v: version, state };
+  let overlayRev = "";
+  if (typeof getOverlayRev === "function") {
+    try {
+      overlayRev = String(getOverlayRev() || "");
+    } catch {
+      overlayRev = "";
+    }
+  }
+  let answer = "";
+  if (files && files.box1Answer && fs.existsSync(files.box1Answer)) {
+    try {
+      answer = fs.readFileSync(files.box1Answer, "utf8").trim();
+    } catch {
+      answer = "";
+    }
+  }
+  return { v: version, state, overlayRev, answer, swapOverlay: Boolean(overlayRev) };
 }
 
 function sendJson(res, payload) {
@@ -68,10 +106,78 @@ function sendJson(res, payload) {
   res.end(JSON.stringify(payload));
 }
 
-function waitForLiveChange(files, since, sinceState, waitMs, req, res) {
+function parseCookies(header) {
+  const out = {};
+  String(header || "")
+    .split(";")
+    .forEach((part) => {
+      const idx = part.indexOf("=");
+      if (idx < 0) return;
+      const key = part.slice(0, idx).trim();
+      const value = part.slice(idx + 1).trim();
+      if (key) out[key] = decodeURIComponent(value);
+    });
+  return out;
+}
+
+function readQueryParam(urlPath, name) {
+  try {
+    return String(new URL(urlPath, "http://emu.local").searchParams.get(name) || "");
+  } catch {
+    return "";
+  }
+}
+
+function holdTokenFromRequest(req, body = {}) {
+  const header = String(req.headers["x-emu-hold-token"] || "").trim();
+  if (header) return header;
+  const bodyToken = String((body && body.holdToken) || "").trim();
+  if (bodyToken) return bodyToken;
+  const query = readQueryParam(req.url || "/", "emu_hold");
+  if (query) return query;
+  return String(parseCookies(req.headers.cookie).emu_hold || "").trim();
+}
+
+function appendSetCookie(res, cookie) {
+  const prev = res.getHeader("Set-Cookie");
+  if (!prev) {
+    res.setHeader("Set-Cookie", cookie);
+    return;
+  }
+  const list = Array.isArray(prev) ? prev.slice() : [String(prev)];
+  list.push(cookie);
+  res.setHeader("Set-Cookie", list);
+}
+
+function holdCookieValue(req, holdToken) {
+  if (!holdToken) return "";
+  const offered = readQueryParam(req.url || "/", "emu_hold");
+  if (!offered || offered !== holdToken) return "";
+  return `emu_hold=${encodeURIComponent(holdToken)}; Path=/; SameSite=Lax; HttpOnly`;
+}
+
+function withHoldCookie(headers, req, holdToken) {
+  const cookie = holdCookieValue(req, holdToken);
+  if (!cookie) return headers;
+  const out = { ...(headers || {}) };
+  const prev = out["set-cookie"] || out["Set-Cookie"];
+  if (!prev) out["Set-Cookie"] = cookie;
+  else if (Array.isArray(prev)) out["Set-Cookie"] = prev.concat(cookie);
+  else out["Set-Cookie"] = [String(prev), cookie];
+  return out;
+}
+
+function maybeGrantHoldCookie(req, res, holdToken) {
+  const cookie = holdCookieValue(req, holdToken);
+  if (!cookie) return false;
+  appendSetCookie(res, cookie);
+  return true;
+}
+
+function waitForLiveChange(files, since, sinceState, waitMs, req, res, getOverlayRev) {
   const started = Date.now();
   const timer = setInterval(() => {
-    const payload = readLivePayload(files);
+    const payload = readLivePayload(files, getOverlayRev);
     const changed = (since && String(payload.v) !== String(since)) || (sinceState && payload.state !== sinceState);
     if (changed || Date.now() - started >= waitMs) {
       clearInterval(timer);
@@ -142,13 +248,54 @@ function createHandsFreeProxy({
   extraOrigins,
   extraHosts,
   saveDataUrl,
-  writeTextFile
+  writeTextFile,
+  handleLiveUpgrade,
+  liveEnabled,
+  onHold,
+  getOverlayJs,
+  getOverlayRev,
+  holdToken = "",
+  insecureUpstream = false
 }) {
   const detected = {
     viteOrigin: viteOrigin || "http://127.0.0.1:5173",
     extraOrigins: Array.isArray(extraOrigins) ? extraOrigins.filter(Boolean) : [],
     extraHosts: Array.isArray(extraHosts) ? extraHosts : []
   };
+  const sessionHoldToken = String(holdToken || "").trim();
+  const allowInsecureUpstream = Boolean(insecureUpstream);
+  const seenViteModules = new Set();
+  let persistSeenTimer = null;
+
+  function persistSeenModules() {
+    if (!files || !files.viteSeen || typeof writeTextFile !== "function") return;
+    try {
+      writeTextFile(files.viteSeen, JSON.stringify([...seenViteModules]));
+    } catch {
+      // optional cache
+    }
+  }
+
+  function trackViteModule(urlPath) {
+    const next = viteHotModulePath(urlPath);
+    if (!next || seenViteModules.has(next)) return;
+    seenViteModules.add(next);
+    if (seenViteModules.size > 400) {
+      const first = seenViteModules.values().next().value;
+      seenViteModules.delete(first);
+    }
+    clearTimeout(persistSeenTimer);
+    persistSeenTimer = setTimeout(persistSeenModules, 250);
+  }
+
+  if (files && files.viteSeen && fs.existsSync(files.viteSeen)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(files.viteSeen, "utf8"));
+      if (Array.isArray(cached)) cached.forEach((item) => trackViteModule(item));
+    } catch {
+      // ignore stale cache
+    }
+  }
 
   function currentPairs() {
     return rewritePairs(detected);
@@ -167,6 +314,8 @@ function createHandsFreeProxy({
     const dest = parseOrigin(destOrigin);
     const lib = requestLib(dest.protocol);
     const headers = copyHeaders(req.headers, { host: destHost || dest.host });
+    const trackPath = pathOverride || req.url || "/";
+    if (destOrigin === detected.viteOrigin) trackViteModule(trackPath);
     const upstream = lib.request(
       {
         protocol: dest.protocol,
@@ -175,12 +324,12 @@ function createHandsFreeProxy({
         path: pathOverride || req.url || "/",
         method: req.method,
         headers,
-        rejectUnauthorized: false
+        rejectUnauthorized: !allowInsecureUpstream
       },
       (up) => {
         const contentType = String(up.headers["content-type"] || "");
         const pairs = currentPairs();
-        const outHeaders = rewriteOutgoingHeaders(up.headers, pairs);
+        const outHeaders = withHoldCookie(rewriteOutgoingHeaders(up.headers, pairs), req, sessionHoldToken);
         if (!shouldRewriteContent(contentType)) {
           res.writeHead(up.statusCode || 502, { ...up.headers, ...outHeaders });
           up.pipe(res);
@@ -204,6 +353,9 @@ function createHandsFreeProxy({
             text = rewriteOrigins(text, currentPairs());
             if (/@vite\/client/i.test(req.url || "") || /vite\/dist\/client/i.test(req.url || "")) {
               text = rewriteViteClient(text);
+            }
+            if (isVueModulePath(pathOverride || req.url || "")) {
+              text = rewriteVueSfcHmr(text);
             }
           }
           const buf = Buffer.from(text, "utf8");
@@ -231,7 +383,7 @@ function createHandsFreeProxy({
       path: pathOverride || req.url || "/",
       method: "GET",
       headers,
-      rejectUnauthorized: false
+      rejectUnauthorized: !allowInsecureUpstream
     });
     upstream.on("upgrade", (upRes, upSocket, upHead) => {
       const lines = ["HTTP/1.1 101 Switching Protocols"];
@@ -249,8 +401,90 @@ function createHandsFreeProxy({
     upstream.end();
   }
 
+  function proxyViteHmrUpgrade(req, socket, head, destOrigin, destHost, pathOverride) {
+    const wsMod = loadWs();
+    if (!wsMod) {
+      proxyUpgrade(req, socket, head, destOrigin, destHost, pathOverride);
+      return;
+    }
+    const { WebSocket, WebSocketServer } = wsMod;
+    const dest = parseOrigin(destOrigin);
+    const proto = dest.protocol === "https:" ? "wss:" : "ws:";
+    const upPath = pathOverride || req.url || "/";
+    const upstreamUrl = `${proto}//${dest.host}${upPath.startsWith("/") ? upPath : `/${upPath}`}`;
+    const wss = new WebSocketServer({
+      noServer: true,
+      handleProtocols: pickViteHmrProtocol
+    });
+    wss.handleUpgrade(req, socket, head, (clientWs) => {
+      const incoming = String(req.headers["sec-websocket-protocol"] || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const protocols = incoming.includes("vite-hmr") ? ["vite-hmr"] : incoming;
+      const pending = [];
+      let opened = false;
+      const upstream = new WebSocket(upstreamUrl, protocols.length ? protocols : undefined, {
+        // Do not forward Origin: Vite requires an HMR token when Origin is set.
+        rejectUnauthorized: !allowInsecureUpstream,
+        perMessageDeflate: false
+      });
+      function sendUp(data, isBinary) {
+        if (upstream.readyState === WebSocket.OPEN) {
+          upstream.send(data, { binary: Boolean(isBinary) });
+          return;
+        }
+        if (!opened) pending.push({ data, isBinary: Boolean(isBinary) });
+      }
+      function sendDown(data, isBinary) {
+        if (clientWs.readyState !== WebSocket.OPEN) return;
+        if (isBinary) {
+          clientWs.send(data, { binary: true });
+          return;
+        }
+        const converted = convertViteHmrPayload(data, seenViteModules);
+        clientWs.send(converted == null ? data : converted);
+      }
+      upstream.on("open", () => {
+        opened = true;
+        pending.splice(0).forEach((item) => sendUp(item.data, item.isBinary));
+      });
+      upstream.on("message", (data, isBinary) => sendDown(data, Boolean(isBinary)));
+      clientWs.on("message", (data, isBinary) => sendUp(data, Boolean(isBinary)));
+      const closeBoth = () => {
+        try {
+          if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
+        } catch {
+          // ignore
+        }
+        try {
+          if (upstream.readyState === WebSocket.OPEN) upstream.close();
+        } catch {
+          // ignore
+        }
+      };
+      upstream.on("close", () => {
+        try {
+          clientWs.close();
+        } catch {
+          // ignore
+        }
+      });
+      clientWs.on("close", () => {
+        try {
+          upstream.close();
+        } catch {
+          // ignore
+        }
+      });
+      upstream.on("error", closeBoth);
+      clientWs.on("error", closeBoth);
+    });
+  }
+
   const server = http.createServer((req, res) => {
     const urlPath = req.url || "/";
+    maybeGrantHoldCookie(req, res, sessionHoldToken);
 
     if (urlPath.startsWith("/__emu/health")) {
       res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -259,15 +493,25 @@ function createHandsFreeProxy({
           ok: true,
           capability: PROXY_CAPABILITY,
           viteOrigin: detected.viteOrigin,
-          extraOrigins: detected.extraOrigins
+          extraOrigins: detected.extraOrigins,
+          live: Boolean(liveEnabled),
+          holdAuth: Boolean(sessionHoldToken)
         })
       );
       return;
     }
 
     if (urlPath.startsWith("/__emu/hold.js")) {
+      let js = overlayJs;
+      if (typeof getOverlayJs === "function") {
+        try {
+          js = getOverlayJs();
+        } catch {
+          js = overlayJs;
+        }
+      }
       res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8", "Cache-Control": "no-store" });
-      res.end(overlayJs);
+      res.end(js);
       return;
     }
 
@@ -285,10 +529,10 @@ function createHandsFreeProxy({
       } catch {
         waitMs = 0;
       }
-      const payload = readLivePayload(files);
+      const payload = readLivePayload(files, getOverlayRev);
       const unchanged = (!since || String(payload.v) === since) && (!sinceState || payload.state === sinceState);
       if (waitMs > 0 && since && unchanged) {
-        waitForLiveChange(files, since, sinceState, waitMs, req, res);
+        waitForLiveChange(files, since, sinceState, waitMs, req, res, getOverlayRev);
         return;
       }
       sendJson(res, payload);
@@ -297,8 +541,26 @@ function createHandsFreeProxy({
 
     if (urlPath.startsWith("/__emu/hold") && req.method === "POST") {
       const chunks = [];
-      req.on("data", (chunk) => chunks.push(chunk));
+      let total = 0;
+      const maxBody = 3 * 1024 * 1024;
+      let rejected = false;
+      req.on("data", (chunk) => {
+        total += chunk.length;
+        if (total > maxBody) {
+          rejected = true;
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on("end", () => {
+        if (rejected) {
+          if (!res.headersSent) {
+            res.writeHead(413, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "payload_too_large" }));
+          }
+          return;
+        }
         let body = {};
         try {
           body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
@@ -307,13 +569,21 @@ function createHandsFreeProxy({
           res.end(JSON.stringify({ ok: false }));
           return;
         }
+        if (sessionHoldToken) {
+          const offered = holdTokenFromRequest(req, body);
+          if (!offered || offered !== sessionHoldToken) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: false, error: "hold_token_required" }));
+            return;
+          }
+        }
         const hasScreenshot = saveDataUrl(body.screenshotDataUrl, files.screenshot);
         const hasAnnotation = saveDataUrl(body.annotationDataUrl, files.annotation);
         const payload = {
           kind: "holdForUserAnswer",
           source: "hands-free",
           decision: body.decision === "accept" ? "accept" : "feedback",
-          noteText: String(body.noteText || ""),
+          noteText: String(body.noteText || "").slice(0, 4000),
           noteLength: String(body.noteText || "").length,
           strokesCount: Number(body.strokesCount || 0),
           submittedAt: new Date().toISOString(),
@@ -323,8 +593,26 @@ function createHandsFreeProxy({
           zoneFound: true
         };
         writeTextFile(files.holdAnswer, JSON.stringify(payload, null, 2));
+        const waiting = Boolean(files.waiting && fs.existsSync(files.waiting));
+        const nextState = waiting && payload.decision === "accept" ? "listening" : "progress";
+        writeTextFile(files.status, nextState);
+        if (!liveEnabled) writeTextFile(files.version, String(Date.now()));
+        if (typeof onHold === "function") {
+          try {
+            onHold(payload);
+          } catch {
+            // live publish is optional
+          }
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, decision: payload.decision }));
+        res.end(JSON.stringify({
+          ok: true,
+          decision: payload.decision,
+          state: nextState,
+          waiting,
+          autoStart: !waiting,
+          ideStarted: true
+        }));
       });
       return;
     }
@@ -389,6 +677,11 @@ function createHandsFreeProxy({
 
   server.on("upgrade", (req, socket, head) => {
     const urlPath = req.url || "/";
+    if (String(urlPath.split("?")[0] || "").startsWith("/__emu/live")) {
+      if (typeof handleLiveUpgrade === "function") handleLiveUpgrade(req, socket, head);
+      else socket.destroy();
+      return;
+    }
     const extraIndex = extraIndexFromPath(urlPath);
     const extra = extraIndex >= 0 ? extraDest(extraIndex) : null;
     if (extra) {
@@ -403,7 +696,14 @@ function createHandsFreeProxy({
       return;
     }
     if (detected.viteOrigin) {
-      proxyUpgrade(req, socket, head, detected.viteOrigin, parseOrigin(detected.viteOrigin).host, stripPrefix(urlPath, "/__emu/vite"));
+      proxyViteHmrUpgrade(
+        req,
+        socket,
+        head,
+        detected.viteOrigin,
+        parseOrigin(detected.viteOrigin).host,
+        stripPrefix(urlPath, "/__emu/vite")
+      );
     }
   });
 
