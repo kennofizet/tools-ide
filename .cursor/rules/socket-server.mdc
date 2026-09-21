@@ -1,0 +1,34 @@
+---
+description: Realtime socket hub for Cursor tools
+globs: cursor/tool/socket-server/**
+alwaysApply: false
+---
+
+# Socket Server Tool
+
+Realtime JSON hub for all tools under `cursor/tool`.
+
+## Defaults
+
+- Start locally: `node server.js start --bind 127.0.0.1 --port 8787`
+- Health: `node server.js health`
+- Stop detached: `node server.js stop`
+- Room: `tools` unless the user names another room
+- Bind loopback unless the user asks for LAN. Token is required when bind is not loopback.
+
+## Agent usage
+
+1. Start the hub once per session if it is not already healthy.
+2. Tools connect with `role=tool` and a stable `--tool` name.
+3. Agents connect with `role=agent`.
+4. Use `event` for status (`run.started`, `hold.submitted`, `live.reload`, `live.state`, `ide.task`).
+5. Use `action` when a tool must do work and ack (`reload`, `stop`).
+6. browser-emulator uses this hub when `/health` is ok (`HUB_LIVE_ON`). Do not fail the emulator if the hub is down.
+7. `ide-working` (`:8788`) is a `client` that renders `ide.task` + `live.state`. That tool's `/health` is 503 until this hub is online.
+8. Do not invent product hostnames or app-specific paths in this tool.
+9. Keep tokens in gitignored `config.json` or `TOOLS_HUB_TOKEN`.
+
+## Public-safe
+
+- No product names in runtime or tracked docs.
+- Example payloads use `example-tool` / `example-1`.

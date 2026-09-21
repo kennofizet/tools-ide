@@ -1,0 +1,16 @@
+{
+  "name": "cursor-socket-server-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Realtime socket hub for Cursor IDE tools",
+  "main": "server.js",
+  "scripts": {
+    "help": "node server.js help",
+    "start": "node server.js start",
+    "health": "node server.js health",
+    "test": "node scripts/test-hub.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
