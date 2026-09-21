@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>IDE Working</title>
+  <style>
+    :root {
+      --bg: #071018;
+      --ink: #e8eef6;
+      --muted: #94a3b8;
+      --lime: #d9ee0b;
+      --pink: #f472b6;
+      --line: rgba(255,255,255,.08);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.45 ui-sans-serif, system-ui, sans-serif; }
+    body { display: flex; flex-direction: column; min-height: 100%; }
+    header {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px 18px; border-bottom: 1px solid var(--line);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #94a3b8; }
+    .dot.on { background: var(--lime); box-shadow: 0 0 10px rgba(217,238,11,.8); }
+    .dot.work { background: var(--pink); box-shadow: 0 0 10px rgba(244,114,182,.85); }
+    .brand { font-weight: 800; letter-spacing: .04em; }
+    .meta-live { font-size: 12px; color: var(--muted); }
+    .chip {
+      margin-left: auto; font-size: 12px; font-weight: 700; letter-spacing: .06em;
+      padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line);
+      color: var(--muted);
+    }
+    .chip.wait { color: var(--lime); border-color: rgba(217,238,11,.4); }
+    .chip.work { color: var(--pink); border-color: rgba(244,114,182,.45); }
+    .offline {
+      margin: 18px; padding: 16px; border: 1px solid rgba(244,114,182,.35);
+      border-radius: 12px; color: var(--pink);
+    }
+    .hidden { display: none; }
+    .feed { flex: 1; overflow: auto; padding: 16px 18px 24px; display: flex; flex-direction: column; gap: 10px; }
+    .row {
+      display: grid; grid-template-columns: 92px 1fr; gap: 12px;
+      padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px;
+      background: #0b1620;
+    }
+    .kind {
+      font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--muted); padding-top: 2px;
+    }
+    .kind.thinking { color: #a5b4fc; }
+    .kind.command { color: var(--pink); }
+    .kind.edit { color: var(--lime); }
+    .kind.wait { color: var(--lime); }
+    .title { font-weight: 700; margin: 0 0 4px; }
+    .detail { margin: 0; color: #dbe7f3; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+    .empty { color: var(--muted); padding: 24px 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="brand">IDE Working</span>
+    <span class="meta-live">activity feed</span>
+    <span class="chip" id="chip">HUB OFF</span>
+  </header>
+  <div class="offline hidden" id="offline">Socket server offline. Start cursor/tool/socket-server, then reload.</div>
+  <div class="feed" id="feed"><div class="empty">Waiting for thinking / commands / file edits.</div></div>
+  <script>
+    var feedEl = document.getElementById("feed");
+    var chipEl = document.getElementById("chip");
+    var dotEl = document.getElementById("dot");
+    var offlineEl = document.getElementById("offline");
+    var socket = null;
+    var poll = null;
+
+    function sanitizeItem(item) {
+      var next = item || {};
+      var title = String(next.title || "");
+      var content = String(next.content || "");
+      if (/wait until the next check/i.test(content) || (title === "Review accepted" && String(next.phase || "") === "done")) {
+        return {
+          kind: "thinking",
+          title: "Thinking",
+          content: "Review accepted. Agent is continuing.",
+          phase: "work"
+        };
+      }
+      return next;
+    }
+
+    function phaseChip(snap) {
+      if (!snap || !snap.hub) return { text: "HUB OFF", cls: "", work: false };
+      var task = sanitizeItem(snap.task || {});
+      var phase = task.phase || "";
+      if (phase === "work") return { text: "IN PROGRESS", cls: "work", work: true };
+      if (phase === "wait") return { text: "WAIT", cls: "wait", work: false };
+      if (phase === "done") return { text: "DONE", cls: "wait", work: false };
+      return { text: "HUB ON", cls: "wait", work: false };
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function render(snap) {
+      var online = Boolean(snap && snap.hub);
+      offlineEl.classList.toggle("hidden", online);
+      var chip = phaseChip(snap);
+      chipEl.textContent = chip.text;
+      chipEl.className = "chip " + chip.cls;
+      dotEl.className = "dot " + (online ? (chip.work ? "work" : "on") : "");
+      var events = (snap && snap.events && snap.events.length) ? snap.events.map(sanitizeItem) : [];
+      if (!events.length) {
+        feedEl.innerHTML = '<div class="empty">' + (online ? "Waiting for thinking / commands / file edits." : "Socket server offline.") + "</div>";
+        return;
+      }
+      feedEl.innerHTML = events.map(function (item) {
+        var kind = String(item.kind || "log");
+        return '<article class="row"><div class="kind ' + escapeHtml(kind) + '">' + escapeHtml(kind) + '</div><div><p class="title">' + escapeHtml(item.title || "") + '</p><p class="detail">' + escapeHtml(item.content || "") + "</p></div></article>";
+      }).join("");
+      feedEl.scrollTop = feedEl.scrollHeight;
+    }
+
+    function closeSocket() {
+      if (socket) {
+        try { socket.close(); } catch (err) {}
+        socket = null;
+      }
+    }
+
+    function connectLive() {
+      closeSocket();
+      var proto = location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(proto + "//" + location.host + "/live");
+      socket.onmessage = function (ev) {
+        try {
+          var msg = JSON.parse(ev.data);
+          if (msg && msg.payload) render(msg.payload);
+        } catch (err) {}
+      };
+      socket.onclose = function () { schedulePoll(); };
+      socket.onerror = function () { try { socket.close(); } catch (err) {} };
+    }
+
+    function schedulePoll() {
+      if (poll) return;
+      poll = setTimeout(function () {
+        poll = null;
+        tick();
+      }, 1500);
+    }
+
+    function tick() {
+      fetch("/health", { cache: "no-store" }).then(function (res) { return res.json().then(function (body) { return { ok: res.ok, body: body }; }); }).then(function (next) {
+        if (next.ok && next.body && next.body.ok) {
+          connectLive();
+          return;
+        }
+        render({ hub: false, task: {}, events: [] });
+        schedulePoll();
+      }).catch(function () {
+        render({ hub: false, task: {}, events: [] });
+        schedulePoll();
+      });
+    }
+
+    tick();
+  </script>
+</body>
+</html>

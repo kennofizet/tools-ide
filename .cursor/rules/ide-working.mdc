@@ -1,0 +1,31 @@
+---
+description: Realtime IDE task viewer (title, content, stream)
+globs: cursor/tool/ide-working/**
+alwaysApply: false
+---
+
+# IDE Working Tool
+
+Viewer for the current IDE/tool task. Own HTTP port. Requires sibling socket-server.
+
+## Defaults
+
+- Start hub first: `node server.js start` in `cursor/tool/socket-server` (`:8787`)
+- Start viewer: `node server.js start` in `cursor/tool/ide-working` (`:8788`)
+- Health: `node server.js health` — **503 / exit 1** until the hub is online
+- Bind loopback unless the user asks for LAN
+- Hub URL from `--hubUrl`, `config.json`, or `socket-server/output/last-hub.json`
+
+## Agent usage
+
+1. Do not start this tool if the hub is down. Print that the socket server must be online.
+2. browser-emulator auto-starts this viewer when hands-free has `HUB_LIVE_ON`. Do not add extra per-project setup.
+3. All checking/render of “what the IDE is doing” belongs here. Overlay stays WAIT / IN PROGRESS only.
+4. Listen for hub events `ide.task` and `live.state`. Chip uses `ide.task.phase` only. Never copy overlay WAIT as “WAIT until the next check.” Hands-free form Submit/Accept always publishes thinking/work, even when no wait loop is listening.
+5. Do not invent product hostnames or app-specific action names.
+6. Keep tokens in gitignored `config.json` or `TOOLS_HUB_TOKEN`.
+
+## Public-safe
+
+- No product names in runtime or tracked docs.
+- Example payloads use `browser-emulator` / `example-1`.

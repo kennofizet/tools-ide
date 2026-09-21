@@ -1,0 +1,7 @@
+node_modules/
+output/
+config.json
+*.local.json
+*.local.*
+tmp-*.mjs
+*.log

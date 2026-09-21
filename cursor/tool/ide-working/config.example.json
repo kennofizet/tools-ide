@@ -1,0 +1,8 @@
+{
+  "port": 8788,
+  "bind": "127.0.0.1",
+  "hubUrl": "http://127.0.0.1:8787",
+  "hubPath": "/hub",
+  "hubToken": "",
+  "room": "tools"
+}
