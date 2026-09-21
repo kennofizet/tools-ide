@@ -609,37 +609,46 @@
       };
       ws.onmessage = function (event) {
         if (stopped) return;
-        var msg;
-        try {
-          msg = JSON.parse(event.data);
-        } catch (err) {
+        function handleText(raw) {
+          var msg;
+          try {
+            msg = JSON.parse(raw);
+          } catch (err) {
+            return;
+          }
+          var payload = msg && msg.payload ? msg.payload : msg;
+          if (msg && (msg.name === "live.state" || msg.name === "live.reload" || msg.name === "hold.submitted" || msg.name === "ide.task")) {
+            if (msg.name === "ide.task") {
+              var phase = payload && payload.phase ? String(payload.phase) : "";
+              if (phase === "work") {
+                lastState = "progress";
+                setAgentUi("progress");
+              } else {
+                if (payload && payload.content) persistBox1(payload.content);
+                lastState = "listening";
+                setAgentUi("live");
+              }
+              return;
+            }
+            if (msg.name === "hold.submitted") {
+              if (payload && (payload.state === "progress" || payload.ideStarted)) {
+                lastState = "progress";
+                setAgentUi("progress");
+              } else {
+                lastState = "listening";
+                setAgentUi("live");
+              }
+              return;
+            }
+            applyPayload(payload, false);
+          }
+        }
+        if (typeof event.data === "string") {
+          handleText(event.data);
           return;
         }
-        var payload = msg && msg.payload ? msg.payload : msg;
-        if (msg && (msg.name === "live.state" || msg.name === "live.reload" || msg.name === "hold.submitted" || msg.name === "ide.task")) {
-          if (msg.name === "ide.task") {
-            var phase = payload && payload.phase ? String(payload.phase) : "";
-            if (phase === "work") {
-              lastState = "progress";
-              setAgentUi("progress");
-            } else {
-              if (payload && payload.content) persistBox1(payload.content);
-              lastState = "listening";
-              setAgentUi("live");
-            }
-            return;
-          }
-          if (msg.name === "hold.submitted") {
-            if (payload && (payload.state === "progress" || payload.ideStarted)) {
-              lastState = "progress";
-              setAgentUi("progress");
-            } else {
-              lastState = "listening";
-              setAgentUi("live");
-            }
-            return;
-          }
-          applyPayload(payload, false);
+        if (event.data && typeof event.data.text === "function") {
+          event.data.text().then(handleText).catch(function () {});
         }
       };
       ws.onclose = function () {

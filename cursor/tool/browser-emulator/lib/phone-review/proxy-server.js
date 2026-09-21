@@ -59,6 +59,17 @@ function hopByHop() {
   ]);
 }
 
+function pageOriginFromReq(req) {
+  const host = String((req && req.headers && req.headers.host) || "").trim();
+  if (!host) return "";
+  const xf = String((req && req.headers && req.headers["x-forwarded-proto"]) || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const proto = xf === "https" || xf === "http" ? xf : "http";
+  return `${proto}://${host}`;
+}
+
 function copyHeaders(source, extra = {}, opts = {}) {
   const skip = hopByHop();
   if (opts.websocket) {
@@ -297,8 +308,11 @@ function createHandsFreeProxy({
     }
   }
 
-  function currentPairs() {
-    return rewritePairs(detected);
+  function currentPairs(req) {
+    return rewritePairsFrom({
+      ...detected,
+      pageOrigin: pageOriginFromReq(req)
+    });
   }
 
   function extraDest(index) {
@@ -328,7 +342,7 @@ function createHandsFreeProxy({
       },
       (up) => {
         const contentType = String(up.headers["content-type"] || "");
-        const pairs = currentPairs();
+        const pairs = currentPairs(req);
         const outHeaders = withHoldCookie(rewriteOutgoingHeaders(up.headers, pairs), req, sessionHoldToken);
         if (!shouldRewriteContent(contentType)) {
           res.writeHead(up.statusCode || 502, { ...up.headers, ...outHeaders });
@@ -347,10 +361,10 @@ function createHandsFreeProxy({
             text = rewriteHtml(text, {
               stripScripts,
               overlaySrc: "/__emu/hold.js",
-              pairs: currentPairs()
+              pairs: currentPairs(req)
             });
           } else {
-            text = rewriteOrigins(text, currentPairs());
+            text = rewriteOrigins(text, currentPairs(req));
             if (/@vite\/client/i.test(req.url || "") || /vite\/dist\/client/i.test(req.url || "")) {
               text = rewriteViteClient(text);
             }
@@ -429,21 +443,43 @@ function createHandsFreeProxy({
         rejectUnauthorized: !allowInsecureUpstream,
         perMessageDeflate: false
       });
+      function asText(data) {
+        if (typeof data === "string") return data;
+        if (Buffer.isBuffer(data)) return data.toString("utf8");
+        if (data instanceof ArrayBuffer) return Buffer.from(data).toString("utf8");
+        if (ArrayBuffer.isView(data)) {
+          return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("utf8");
+        }
+        return String(data);
+      }
       function sendUp(data, isBinary) {
         if (upstream.readyState === WebSocket.OPEN) {
-          upstream.send(data, { binary: Boolean(isBinary) });
+          // Vite HMR is text JSON. Never forward Buffers as binary or the browser gets a Blob.
+          if (isBinary) {
+            const text = asText(data);
+            if (text.startsWith("{") || text.startsWith("[")) {
+              upstream.send(text);
+              return;
+            }
+            upstream.send(data, { binary: true });
+            return;
+          }
+          upstream.send(asText(data));
           return;
         }
         if (!opened) pending.push({ data, isBinary: Boolean(isBinary) });
       }
       function sendDown(data, isBinary) {
         if (clientWs.readyState !== WebSocket.OPEN) return;
-        if (isBinary) {
+        const text = asText(data);
+        const looksJson = text.startsWith("{") || text.startsWith("[");
+        // Browser Vite client does JSON.parse(event.data) and breaks on Blob.
+        if (isBinary && !looksJson) {
           clientWs.send(data, { binary: true });
           return;
         }
-        const converted = convertViteHmrPayload(data, seenViteModules);
-        clientWs.send(converted == null ? data : converted);
+        const converted = convertViteHmrPayload(text, seenViteModules);
+        clientWs.send(converted == null ? text : converted);
       }
       upstream.on("open", () => {
         opened = true;

@@ -13,6 +13,9 @@ function normalizeMode(value) {
   if (["desktop", "pc", "this-computer", "this_computer", "cdp", "edge"].includes(v)) {
     return "desktop";
   }
+  if (["local-open", "localopen", "local_open", "local", "local-feedback", "same-machine"].includes(v)) {
+    return "local-open";
+  }
   if (["hands-free", "handsfree", "hands_free", "other-device", "other_device", "phone", "remote"].includes(v)) {
     return "hands-free";
   }
@@ -35,15 +38,17 @@ function readReviewMode(outputDir) {
 function writeReviewMode(outputDir, mode, source) {
   const normalized = normalizeMode(mode);
   if (!normalized) {
-    throw new Error("Review mode must be 'desktop' or 'hands-free'.");
+    throw new Error("Review mode must be 'desktop', 'local-open', or 'hands-free'.");
   }
   const payload = {
     mode: normalized,
     source: source || "cli",
     savedAt: new Date().toISOString(),
     label: normalized === "hands-free"
-      ? "another device (hands-free)"
-      : "this computer (desktop Edge)"
+      ? "another device (hands-free tunnel)"
+      : normalized === "local-open"
+        ? "this computer (local-open proxy)"
+        : "this computer (desktop Edge CDP)"
   };
   writeTextFile(reviewModePath(outputDir), JSON.stringify(payload, null, 2));
   return payload;
@@ -54,11 +59,13 @@ function requiredMessage() {
     "REVIEW_MODE_REQUIRED",
     "Ask the human before testing or collecting feedback:",
     "  1) This computer — desktop Edge CDP hold",
-    "  2) Another device — hands-free mode (Docker tunnel + on-device form)",
+    "  2) This computer — local-open (proxy + form, no Docker tunnel)",
+    "  3) Another device — hands-free mode (Docker tunnel + on-device form)",
     "Save the answer with:",
     "  node emulator.js review-mode --mode desktop",
+    "  node emulator.js review-mode --mode local-open",
     "  node emulator.js review-mode --mode hands-free",
-    "Or pass --reviewMode desktop|hands-free once. It is remembered in output/review-mode.local.json."
+    "Or pass --reviewMode desktop|local-open|hands-free once. It is remembered in output/review-mode.local.json."
   ].join("\n");
 }
 
@@ -98,9 +105,12 @@ function assertHoldPath({ command, actionType, mode }) {
   const isCdpHold = command === "action" && (type === "hold" || type === "holdForUserAnswer");
   const isHandsFreeCmd = command === "hands-free" || command === "hands-free-reload" || command === "hands-free-watch" || command === "phone-review" || command === "phone-reload";
 
-  if (mode === "hands-free" && isCdpHold) {
+  if ((mode === "hands-free" || mode === "local-open") && isCdpHold) {
+    const next = mode === "local-open"
+      ? "node emulator.js hands-free --localOpen true --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag local-open-1"
+      : "node emulator.js hands-free --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag hands-free-1";
     const error = new Error(
-      "Hands-free mode is saved. CDP hold cannot reach another device.\nRun: node emulator.js hands-free --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag hands-free-1"
+      `${mode} mode is saved. CDP hold is the wrong path.\nRun: ${next}`
     );
     error.exitCode = 2;
     throw error;
@@ -108,7 +118,7 @@ function assertHoldPath({ command, actionType, mode }) {
 
   if (mode === "desktop" && isHandsFreeCmd) {
     const error = new Error(
-      "Desktop mode is saved. Collect feedback with --type holdForUserAnswer on this computer.\nTo switch: node emulator.js review-mode --mode hands-free"
+      "Desktop mode is saved. Collect feedback with --type holdForUserAnswer on this computer.\nTo switch: node emulator.js review-mode --mode local-open|hands-free"
     );
     error.exitCode = 2;
     throw error;
@@ -131,6 +141,8 @@ function handleReviewModeCommand({ args, outputDir }) {
   console.log(`REVIEW_MODE_SAVED mode=${saved.mode} (${saved.label})`);
   if (saved.mode === "hands-free") {
     console.log("Next: node emulator.js hands-free --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag hands-free-1");
+  } else if (saved.mode === "local-open") {
+    console.log("Next: node emulator.js hands-free --localOpen true --origin http://127.0.0.1 --hostHeader <vhost> --holdTimeoutMs 600000 --runTag local-open-1");
   } else {
     console.log("Next: node emulator.js action --type holdForUserAnswer --selector <zone> --holdTimeoutMs 600000 --runTag desktop-hold-1");
   }

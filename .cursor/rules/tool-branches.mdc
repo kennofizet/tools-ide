@@ -1,0 +1,48 @@
+---
+description: Per-tool git branches — commit/push tool branch, then merge to main
+alwaysApply: true
+---
+
+# tools-ide — per-tool branch workflow
+
+This repo publishes multiple tools under `cursor/tool/`. **Each tool has its own long-lived branch.** Do not commit tool work directly on `main`.
+
+## Branch map
+
+| Tool path | Branch |
+|---|---|
+| `cursor/tool/browser-emulator/` | `tool/browser-emulator` |
+| `cursor/tool/socket-server/` | `tool/socket-server` |
+| `cursor/tool/ide-working/` | `tool/ide-working` |
+
+New tools: create `tool/<kebab-name>` matching the folder name.
+
+## Required flow (commit + push)
+
+1. Identify which tool(s) changed. Split mixed working trees — **one tool per commit/branch**.
+2. Checkout that tool branch and update it from `main` first:
+   - `git checkout tool/<name>`
+   - `git merge main` (keep history clear; no force-push)
+3. Stage **only** that tool’s files (plus shared docs/rules that belong with this change).
+4. Commit on the tool branch (normal engineering message; no editor/AI attribution).
+5. Push the tool branch: `git push -u origin tool/<name>`
+6. Checkout `main`, merge the tool branch, push `main`:
+   - `git checkout main`
+   - `git merge tool/<name>`
+   - `git push origin main`
+7. Leave the tool branch intact on the remote (do not delete after merge).
+
+## Hard rules
+
+- Never commit product hostnames, login configs, `output/`, or secrets — those stay gitignored.
+- Never put tool A’s code into tool B’s branch.
+- Shared root files (e.g. `.gitignore`, `.cursor/rules/*` that apply repo-wide) may land with the tool change that introduced them, then ride the merge to `main`.
+- If only `main` is checked out with dirty files for one tool, move the work onto that tool branch before committing.
+- Do not `git push` unless the user asked to push (this rule assumes they did when they request this workflow).
+
+## Agent checklist before finishing
+
+- [ ] Commit is on `tool/<name>`, not authored only on `main`
+- [ ] `origin/tool/<name>` updated
+- [ ] `main` merged that branch and `origin/main` updated
+- [ ] `git status` clean (or only unrelated local/ignored files left)

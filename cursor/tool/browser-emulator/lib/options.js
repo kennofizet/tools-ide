@@ -6,7 +6,12 @@ function normalizeUrlInput(urlLike) {
   const value = String(urlLike).trim();
   if (!value) return "";
   if (/^https?:\/\//i.test(value)) return value;
-  return `https://${value.replace(/^\/+/, "")}`;
+  const bare = value.replace(/^\/+/, "");
+  // Local-open / loopback proxies are HTTP-only; defaulting to https breaks CDP goto.
+  if (/^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(bare)) {
+    return `http://${bare}`;
+  }
+  return `https://${bare}`;
 }
 
 function getPresetOptions(presetName, useCdp) {

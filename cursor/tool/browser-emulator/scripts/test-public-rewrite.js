@@ -52,6 +52,22 @@ if (out.indexOf("/*__emu-origin-map*/") > out.indexOf(`${extraPrefix(0)}/js/rout
   throw new Error("origin map must run before page scripts");
 }
 
+const absPairs = rewritePairsFrom({ ...detected, pageOrigin: "http://127.0.0.1:60071" });
+const absOut = rewriteHtml(html, {
+  stripScripts: [],
+  overlaySrc: "/__emu/hold.js",
+  pairs: absPairs
+});
+if (!absOut.includes(`http://127.0.0.1:60071${extraPrefix(0)}/js/routes.js`)) {
+  throw new Error("pageOrigin must make extra origins absolute for axios baseURL safety");
+}
+if (!absOut.includes(`http://127.0.0.1:60071${extraPrefix(1)}`)) {
+  throw new Error("pageOrigin missing on second extra origin");
+}
+if (/"to":"\/__emu\/x\/0"/.test(absOut)) {
+  throw new Error("origin map must not keep relative extra targets when pageOrigin is set");
+}
+
 const {
   isHtmlDocument,
   rewriteHtml: rewriteHtmlDoc

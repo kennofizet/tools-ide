@@ -32,18 +32,20 @@ Before any test or feedback run, the tool needs to know **where the human is rev
 | Choice | Meaning | Hold path |
 |---|---|---|
 | **desktop** | This computer | Edge CDP `holdForUserAnswer` |
+| **local-open** | This computer | Local proxy + hold form (`--localOpen true`, no Docker tunnel) |
 | **hands-free** | Another device (phone, tablet, another PC) | `hands-free` Docker tunnel + on-device form |
 
 The agent must **ask the human** the first time, then save:
 
 ```bash
 node emulator.js review-mode --mode desktop
+node emulator.js review-mode --mode local-open
 node emulator.js review-mode --mode hands-free
 ```
 
-That writes `output/review-mode.local.json` and later commands reuse it. Pass `--reviewMode desktop|hands-free` on any command to change it.
+That writes `output/review-mode.local.json` and later commands reuse it. Pass `--reviewMode desktop|local-open|hands-free` on any command to change it.
 
-Hard rule: if they want feedback or testing on **another device**, hands-free is required. CDP hold cannot inject a form there.
+Hard rule: if they want feedback or testing on **another device**, hands-free is required. CDP hold cannot inject a form there. For same-machine proxy feedback without a tunnel, use **local-open**.
 
 ## Mandatory Agent Test Loop
 
@@ -292,6 +294,14 @@ node emulator.js hands-free-reload --config config.json --state listening --answ
 node emulator.js hands-free-stop --config config.json
 ```
 
+Local-open (same overlay, this computer, no Docker/Cloudflare):
+
+```bash
+node emulator.js review-mode --mode local-open
+node emulator.js hands-free --localOpen true --config config.json --origin http://127.0.0.1 --hostHeader app.example.test --holdTimeoutMs 600000 --runTag local-open-1
+```
+
+Open the printed `HANDS_FREE_OPEN` (`http://127.0.0.1:<port>/...?emu_hold=...`) in a browser on this machine.
 Agent workflow:
 
 1. Confirm saved mode is `hands-free`.
@@ -313,7 +323,7 @@ Notes:
 - Extra origins are rewritten to `/__emu/x/0`, `/__emu/x/1`, … . `/__emu/backend` is an alias of the first extra origin.
 - Runtime code must not hardcode product hostnames or machine paths. Put those in gitignored `*.local.json` and `flow/domain/<your-domain>.md`.
 - If the other device gets `503`, Cloudflare **Error 1033**, or the trycloudflare host does not resolve, the quick tunnel is not ready or dropped. Wait for `HANDS_FREE_TUNNEL_READY`, or restart `hands-free` and open the new `HANDS_FREE_URL`. Do not keep using an old hostname. Health checks fall back to DNS `1.1.1.1` when Node `getaddrinfo` cannot resolve trycloudflare hosts.
-- If `cursor/tool/socket-server` is healthy (`GET /health`), hands-free uses it for live updates. Look for `HUB_LIVE_ON`. After a code edit, `hands-free-reload --state progress|listening` prints `HUB_LIVE_SENT` and **does not reload the page**. The socket updates the WAIT / IN PROGRESS badge. App UI updates through Vite HMR. The proxy rewrites `@vite/client` so HMR uses the tunnel host, reconnects on websocket drop instead of `location.reload()`, **rewrites Vite `full-reload` websocket messages into a single-module `js-update`** (payload path, or the last seen `.vue` — never the whole seen graph), and **rewrites compiled `.vue` HMR to always `reload` the component** so static templates update without changing app source (`rewrite-v23+`). Overlay WAIT must not trigger a live patch. Do not edit the product app to make review HMR work. Full navigation happens only when the hub is down (`HUB_LIVE_OFF`). When the hub is up, hands-free also starts sibling `cursor/tool/ide-working` (`IDE_WORKING_ON`, default `http://127.0.0.1:8788/`) and publishes `ide.task`. Overlay stays WAIT / IN PROGRESS; title / content / stream render in that viewer.
+- If `cursor/tool/socket-server` is healthy (`GET /health`), hands-free uses it for live updates. Look for `HUB_LIVE_ON`. After a code edit, `hands-free-reload --state progress|listening` prints `HUB_LIVE_SENT` and **does not reload the page**. The socket updates the WAIT / IN PROGRESS badge. App UI updates through Vite HMR. The proxy rewrites `@vite/client` so HMR uses the tunnel host, reconnects on websocket drop instead of `location.reload()`, **rewrites Vite `full-reload` websocket messages into a single-module `js-update`** (payload path, or the last seen `.vue` — never the whole seen graph), and **rewrites compiled `.vue` HMR to always `reload` the component** so static templates update without changing app source (`rewrite-v24+`). Extra API origins rewrite to **absolute** same-origin URLs (`http(s)://<proxy-host>/__emu/x/N/...`) so axios `baseURL` does not concatenate relative `/__emu/x/1` paths onto the v1 API base. Overlay WAIT must not trigger a live patch. Do not edit the product app to make review HMR work. Full navigation happens only when the hub is down (`HUB_LIVE_OFF`). When the hub is up, hands-free also starts sibling `cursor/tool/ide-working` (`IDE_WORKING_ON`, default `http://127.0.0.1:8788/`) and publishes `ide.task`. Overlay stays WAIT / IN PROGRESS; title / content / stream render in that viewer.
 - Badge: **WAIT** while an agent wait is active (reviewer should act) and after **Accept**. **IN PROGRESS** when Submit happens during wait, or when Submit/Accept auto-starts the agent because no wait was running. `hands-free-watch` prints `HANDS_FREE_HOLD_WAKE` so the agent session continues.
 - The hands-free form can be dragged by the title row and resized from the bottom-right corner. Size/position are remembered on that device.
 - Default `--stripScript` is empty. Pass a filename only when the app injects its own overlay that would conflict with the tool form.

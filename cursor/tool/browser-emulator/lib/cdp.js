@@ -166,7 +166,11 @@ async function pickPageFromBrowser(browser, { matchUrl, timeoutMs }) {
     const raw = String(value || "").trim();
     if (!raw) return "";
     if (/^https?:\/\//i.test(raw)) return raw;
-    return `https://${raw.replace(/^\/+/, "")}`;
+    const bare = raw.replace(/^\/+/, "");
+    if (/^(localhost|127\.0\.0\.1|\[::1\])(:|\/|$)/i.test(bare)) {
+      return `http://${bare}`;
+    }
+    return `https://${bare}`;
   };
   const getHostname = (value) => {
     try {

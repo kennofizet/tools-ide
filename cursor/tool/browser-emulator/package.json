@@ -12,7 +12,7 @@
     "run:bg": "powershell -ExecutionPolicy Bypass -File ./run-background.ps1 -ConfigPath ./config.json",
     "run:fast": "node emulator.js run --config config.json --preset quick",
     "run:secure": "node emulator.js run --config config.json --preset secure",
-    "test": "node scripts/test-public-rewrite.js && node scripts/test-hands-free-proxy-smoke.js && node scripts/test-hub-live.js && node scripts/test-hold-queue.js"
+    "test": "node scripts/test-public-rewrite.js && node scripts/test-hands-free-proxy-smoke.js && node scripts/test-hub-live.js && node scripts/test-hold-queue.js && node scripts/test-review-mode.js && node scripts/test-cdp-launch.js"
   },
   "dependencies": {
     "playwright": "^1.54.2",

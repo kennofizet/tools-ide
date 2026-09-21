@@ -1,4 +1,4 @@
-const PROXY_CAPABILITY = "rewrite-v23";
+const PROXY_CAPABILITY = "rewrite-v24";
 
 function extraPrefix(index) {
   return `/__emu/x/${Number(index)}`;
@@ -308,11 +308,15 @@ function convertViteHmrPayload(raw, seenModules) {
   });
 }
 
-function rewritePairsFrom({ viteOrigin, extraOrigins }) {
+function rewritePairsFrom({ viteOrigin, extraOrigins, pageOrigin }) {
   const pairs = [];
+  const base = String(pageOrigin || "").replace(/\/$/, "");
   if (viteOrigin) pairs.push({ from: viteOrigin, to: "" });
   (extraOrigins || []).forEach((origin, index) => {
-    pairs.push({ from: origin, to: extraPrefix(index) });
+    const prefix = extraPrefix(index);
+    // Absolute same-origin targets so axios (baseURL + path) does not concatenate
+    // `/__emu/x/1/...` onto the v1 baseURL. Relative prefixes break $api.* URLs.
+    pairs.push({ from: origin, to: base ? `${base}${prefix}` : prefix });
   });
   return pairs;
 }

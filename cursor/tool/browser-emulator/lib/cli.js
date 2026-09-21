@@ -87,8 +87,8 @@ Action mode flags:
   --caseNote <text>               Optional human note for current step
 
 Phone / hands-free flags:
-  --reviewMode <desktop|hands-free>  Save and use this review device (remembered)
-  --mode <desktop|hands-free>        Used by review-mode
+  --reviewMode <desktop|local-open|hands-free>  Save and use this review device (remembered)
+  --mode <desktop|local-open|hands-free>        Used by review-mode
   --origin <http://127.0.0.1>        Local app origin the tunnel proxies to
   --hostHeader <host>                Host header for local vhosts (example: app.example.test)
   --viteOrigin <http://127.0.0.1:5173>  Vite (or other) dev server to keep off loopback
@@ -101,6 +101,7 @@ Phone / hands-free flags:
   --state <listening|progress>       Used by hands-free-reload (live state only when hub is on)
   --answer <text>                    Show this text in Box 1 on the other device when WAIT
   --holdToken <secret>               Session token required for POST /__emu/hold (auto-generated)
+  --localOpen true                   Local feedback mode: proxy on 127.0.0.1, no Docker tunnel
   --insecureUpstream true            Allow bad/self-signed TLS to --extraOrigin (default: false)
   --hubUrl <http://127.0.0.1:8787>   Socket hub HTTP origin (used when /health is ok)
   --hubToken <secret>                Shared hub token
@@ -118,10 +119,17 @@ Security:
   host into public chats. Upstream HTTPS verifies certificates unless
   --insecureUpstream true.
 
+Review modes:
+  desktop      CDP hold on this computer
+  local-open   Same hold overlay via local proxy (no Cloudflare / Docker tunnel)
+  hands-free   Other-device tunnel review
+
 Examples:
   node emulator.js dom --config config.json --url "https://example.com"
   node emulator.js action --config config.json --type waitForSelector --selector body
   node emulator.js run --config config.json --preset secure
+  node emulator.js review-mode --mode local-open
+  node emulator.js hands-free --localOpen true --config config.json --origin http://127.0.0.1 --hostHeader app.example.test --holdTimeoutMs 600000 --runTag local-open-1
   node emulator.js review-mode --mode hands-free
   node emulator.js hands-free --config config.json --origin http://127.0.0.1 --hostHeader app.example.test --holdTimeoutMs 600000 --runTag hands-free-1
   node emulator.js hands-free-reload --config config.json --state listening

@@ -8,7 +8,7 @@ alwaysApply: false
 
 When working in `cursor/tool/browser-emulator/`, follow this order:
 
-0. **Review device first.** If `output/review-mode.local.json` is missing, ask the human: this computer (desktop) or another device (hands-free). Save with `node emulator.js review-mode --mode desktop|hands-free`. Do not start hold until that is saved. Another-device feedback **requires** hands-free.
+0. **Review device first.** If `output/review-mode.local.json` is missing, ask the human: this computer (desktop CDP), this computer (local-open proxy), or another device (hands-free tunnel). Save with `node emulator.js review-mode --mode desktop|local-open|hands-free`. Do not start hold until that is saved. Another-device feedback **requires** hands-free. Same-machine overlay without tunnel uses **local-open**.
 1. Read `cursor/tool/browser-emulator/TESTING_RULES.md` before running tests or making changes.
 2. Read domain flow note first: `cursor/tool/browser-emulator/flow/domain/<domain>.md` (fallback `flow/domain/default.md`).
 3. If a request includes run/test/login/navigation, use the checklist from `TESTING_RULES.md` first.

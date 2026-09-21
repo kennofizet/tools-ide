@@ -11,6 +11,7 @@
   "handsFreeHostHeader": "",
   "handsFreeViteOrigin": "http://127.0.0.1:5173",
   "handsFreeExtraOrigins": "",
+  "handsFreeLocalOpen": false,
   "hubUrl": "http://127.0.0.1:8787",
   "hubToken": "",
   "hubRoom": "tools",

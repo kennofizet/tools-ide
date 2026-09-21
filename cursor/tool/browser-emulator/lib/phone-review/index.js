@@ -356,6 +356,22 @@ function withHoldQuery(publicUrl, openPath, holdToken) {
   }
 }
 
+function isLocalOpenUrl(publicUrl) {
+  try {
+    const host = new URL(String(publicUrl || "")).hostname;
+    return host === "127.0.0.1" || host === "localhost" || host === "::1";
+  } catch {
+    return false;
+  }
+}
+
+async function isServingReachable(state, options = {}) {
+  if (!state || !state.proxyPort || state.capability !== PROXY_CAPABILITY) return false;
+  if (!(await isServeHealthy(state.proxyPort))) return false;
+  if (options.localOpen || state.localOpen || isLocalOpenUrl(state.publicUrl)) return true;
+  return isPublicTunnelHealthy(state.publicUrl);
+}
+
 function resolveReviewOptions({ args, config, outputDir }) {
   const runTag = args.runTag || config.runTag || `hands-free-${getNowTag()}`;
   const origin = String(args.origin || config.phoneOrigin || config.handsFreeOrigin || "http://127.0.0.1").replace(/\/$/, "");
@@ -385,6 +401,17 @@ function resolveReviewOptions({ args, config, outputDir }) {
   const hub = resolveHubOptions({ args, config });
   const existing = readState(outputDir);
   const holdToken = String(args.holdToken || config.handsFreeHoldToken || (existing && existing.holdToken) || makeHoldToken());
+  let localOpen = parseBoolFlag(args.localOpen ?? config.handsFreeLocalOpen, false);
+  try {
+    const { readReviewMode } = require("../review-mode");
+    const saved = readReviewMode(outputDir);
+    if (saved && saved.mode === "local-open") localOpen = true;
+  } catch {
+    // optional
+  }
+  if (existing && existing.localOpen && args.localOpen === undefined && config.handsFreeLocalOpen === undefined) {
+    localOpen = true;
+  }
   return {
     runTag,
     origin,
@@ -403,7 +430,8 @@ function resolveReviewOptions({ args, config, outputDir }) {
     keepTunnel: args.keepTunnel === true || String(args.keepTunnel || "") === "true",
     publicUrl: String(args.publicUrl || ""),
     holdToken,
-    insecureUpstream: parseBoolFlag(args.insecureUpstream ?? config.handsFreeInsecureUpstream, false)
+    insecureUpstream: parseBoolFlag(args.insecureUpstream ?? config.handsFreeInsecureUpstream, false),
+    localOpen
   };
 }
 
@@ -478,7 +506,8 @@ async function serveReview(options) {
   });
 
   await new Promise((resolve, reject) => {
-    server.listen(port, "0.0.0.0", resolve);
+    const bindHost = options.localOpen ? "127.0.0.1" : "0.0.0.0";
+    server.listen(port, bindHost, resolve);
     server.on("error", reject);
   });
 
@@ -498,7 +527,11 @@ async function serveReview(options) {
   }
 
   let publicUrl = String(options.publicUrl || "");
-  if (options.keepTunnel && publicUrl) {
+  if (options.localOpen) {
+    publicUrl = `http://127.0.0.1:${port}`;
+    console.log("HANDS_FREE_LOCAL_OPEN no Docker tunnel");
+    console.log(await isServeHealthy(port) ? "HANDS_FREE_LOCAL_READY" : "HANDS_FREE_LOCAL_NOT_READY");
+  } else if (options.keepTunnel && publicUrl) {
     console.log("HANDS_FREE_KEEP_TUNNEL");
   } else {
     startTunnel({ proxyPort: port, dockerHost: options.dockerHost });
@@ -517,6 +550,7 @@ async function serveReview(options) {
     viteOrigin: options.viteOrigin,
     extraOrigins: options.extraOrigins,
     holdToken: options.holdToken,
+    localOpen: Boolean(options.localOpen),
     hubLive,
     hubUrl: hubHealth.httpUrl || "",
     pid: process.pid,
@@ -529,7 +563,11 @@ async function serveReview(options) {
   console.log(`PHONE_REVIEW_URL=${publicUrl}`);
   console.log(`HANDS_FREE_HOLD_TOKEN=${options.holdToken}`);
   console.log(`HANDS_FREE_OPEN=${openUrl}`);
-  console.log("HANDS_FREE_CAPABILITY_URL treat HANDS_FREE_OPEN as a secret share link (holds agent wake)");
+  if (options.localOpen) {
+    console.log("HANDS_FREE_CAPABILITY_URL local-open: open HANDS_FREE_OPEN in a browser on this machine");
+  } else {
+    console.log("HANDS_FREE_CAPABILITY_URL treat HANDS_FREE_OPEN as a secret share link (holds agent wake)");
+  }
   console.log(`HANDS_FREE_SERVING port=${port} host=${options.hostHeader}`);
   console.log(`HANDS_FREE_REWRITE vite=${options.viteOrigin} extra=${(options.extraOrigins || []).join(",")}`);
   if (options.insecureUpstream) {
@@ -537,10 +575,12 @@ async function serveReview(options) {
   }
   if (hubLive) {
     await publishTask(hubHealth, {
-      title: options.keepTunnel ? "Thinking" : "Hands-free serving",
+      title: options.keepTunnel ? "Thinking" : (options.localOpen ? "Local-open serving" : "Hands-free serving"),
       content: options.keepTunnel
         ? "Proxy restarted. Agent is continuing."
-        : `Open ${openPath} on the other device.`,
+        : (options.localOpen
+          ? `Open ${openUrl} on this computer.`
+          : `Open ${openPath} on the other device.`),
       stream: `serving ${publicUrl}${openPath}`,
       kind: options.keepTunnel ? "thinking" : "log",
       phase: options.keepTunnel ? "work" : "wait",
@@ -563,24 +603,26 @@ function spawnServeDetached(argsList) {
 
 async function ensureServing(options, rawArgv) {
   const existing = readState(options.outputDir);
-  if (
-    existing &&
-    existing.proxyPort &&
-    existing.capability === PROXY_CAPABILITY &&
-    (await isServeHealthy(existing.proxyPort)) &&
-    (await isPublicTunnelHealthy(existing.publicUrl))
-  ) {
+  if (existing && (await isServingReachable(existing, options))) {
     console.log(`HANDS_FREE_URL=${existing.publicUrl}`);
     console.log(`PHONE_REVIEW_URL=${existing.publicUrl}`);
     if (existing.holdToken) {
       console.log(`HANDS_FREE_HOLD_TOKEN=${existing.holdToken}`);
       console.log(`HANDS_FREE_OPEN=${withHoldQuery(existing.publicUrl, options.openPath || "/", existing.holdToken)}`);
     }
-    console.log("HANDS_FREE_REUSED existing tunnel");
+    console.log(existing.localOpen || options.localOpen ? "HANDS_FREE_REUSED existing local-open" : "HANDS_FREE_REUSED existing tunnel");
     return existing;
   }
-  if (existing && existing.proxyPort && existing.publicUrl && (await isPublicTunnelHealthy(existing.publicUrl))) {
-    console.log("HANDS_FREE_RESTART_PROXY keep-tunnel");
+  const canKeep = existing
+    && existing.proxyPort
+    && existing.publicUrl
+    && (
+      options.localOpen || existing.localOpen || isLocalOpenUrl(existing.publicUrl)
+        ? await isServeHealthy(existing.proxyPort)
+        : await isPublicTunnelHealthy(existing.publicUrl)
+    );
+  if (canKeep) {
+    console.log(options.localOpen || existing.localOpen ? "HANDS_FREE_RESTART_PROXY keep-local" : "HANDS_FREE_RESTART_PROXY keep-tunnel");
     if (existing.pid && existing.pid !== process.pid) {
       try {
         process.kill(existing.pid);
@@ -589,8 +631,18 @@ async function ensureServing(options, rawArgv) {
       }
     }
     await sleep(1200);
-    const passArgs = ["hands-free", "--serve", "--keepTunnel", "true", "--proxyPort", String(existing.proxyPort), "--publicUrl", existing.publicUrl];
+    const passArgs = [
+      "hands-free",
+      "--serve",
+      "--keepTunnel",
+      "true",
+      "--proxyPort",
+      String(existing.proxyPort),
+      "--publicUrl",
+      existing.publicUrl
+    ];
     if (existing.holdToken) passArgs.push("--holdToken", String(existing.holdToken));
+    if (options.localOpen || existing.localOpen) passArgs.push("--localOpen", "true");
     const keep = [
       "config",
       "origin",
@@ -612,13 +664,14 @@ async function ensureServing(options, rawArgv) {
       "hubRoom",
       "noHub",
       "holdToken",
-      "insecureUpstream"
+      "insecureUpstream",
+      "localOpen"
     ];
     keep.forEach((key) => {
       if (rawArgv[key] !== undefined && rawArgv[key] !== true) {
         const value = key === "config" ? path.resolve(String(rawArgv[key])) : String(rawArgv[key]);
         passArgs.push(`--${key}`, value);
-      } else if (rawArgv[key] === true && key === "insecureUpstream") {
+      } else if (rawArgv[key] === true && (key === "insecureUpstream" || key === "localOpen")) {
         passArgs.push(`--${key}`, "true");
       }
     });
@@ -669,26 +722,33 @@ async function ensureServing(options, rawArgv) {
     "keepTunnel",
     "publicUrl",
     "holdToken",
-    "insecureUpstream"
+    "insecureUpstream",
+    "localOpen"
   ];
   keep.forEach((key) => {
     if (rawArgv[key] !== undefined && rawArgv[key] !== true) {
       const value = key === "config" ? path.resolve(String(rawArgv[key])) : String(rawArgv[key]);
       passArgs.push(`--${key}`, value);
-    } else if (rawArgv[key] === true && key === "insecureUpstream") {
+    } else if (rawArgv[key] === true && (key === "insecureUpstream" || key === "localOpen")) {
       passArgs.push(`--${key}`, "true");
     }
   });
   if (options.holdToken && !rawArgv.holdToken) passArgs.push("--holdToken", String(options.holdToken));
   if (options.insecureUpstream && rawArgv.insecureUpstream === undefined) passArgs.push("--insecureUpstream", "true");
+  if (options.localOpen && rawArgv.localOpen === undefined) passArgs.push("--localOpen", "true");
   spawnServeDetached(passArgs);
 
   const deadline = Date.now() + 120000;
   while (Date.now() < deadline) {
     const state = readState(options.outputDir);
     if (state && state.publicUrl && state.proxyPort && (await isServeHealthy(state.proxyPort))) {
-      const publicOk = await waitUntilPublicHealthy(state.publicUrl, 45000);
-      console.log(publicOk ? "HANDS_FREE_TUNNEL_READY" : "HANDS_FREE_TUNNEL_NOT_READY");
+      let publicOk = true;
+      if (!(options.localOpen || state.localOpen || isLocalOpenUrl(state.publicUrl))) {
+        publicOk = await waitUntilPublicHealthy(state.publicUrl, 45000);
+        console.log(publicOk ? "HANDS_FREE_TUNNEL_READY" : "HANDS_FREE_TUNNEL_NOT_READY");
+      } else {
+        console.log("HANDS_FREE_LOCAL_READY");
+      }
       if (!publicOk) {
         await sleep(2000);
         continue;
