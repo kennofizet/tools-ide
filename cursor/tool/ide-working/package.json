@@ -1,0 +1,16 @@
+{
+  "name": "cursor-ide-working-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Realtime IDE task viewer for Cursor tools (title, content, stream)",
+  "main": "server.js",
+  "scripts": {
+    "help": "node server.js help",
+    "start": "node server.js start",
+    "health": "node server.js health",
+    "test": "node scripts/test-ide-working.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
