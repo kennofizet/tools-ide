@@ -13,6 +13,8 @@
 - Confirm target URL and runTag.
 - Reuse stable session (`--session`, `--keepProgress true`) unless clean state is required.
 - Prefer scoped selectors over plain `text=...` when duplicate labels exist.
+- Vue/SPA pages: first `goto` often captures the boot spinner. After navigate, run a second step (`waitForSelector` / `waitForText` on a known post-load marker, or `reload` then wait) before treating screenshot/DOM as the product UI.
+- Always read `flow/domain/<host>.md` first — domain notes may require a dedicated CDP port (not the tool default), and they stay local / gitignored.
 
 ## Artifacts to read
 - `output/runs/<runTag>/run-summary.json`

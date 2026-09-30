@@ -196,6 +196,7 @@ node emulator.js action --config config.json --useCdp true --liveMode true --cdp
 
 Notes:
 - `--attachMatchUrl` can be full URL or partial string.
+- Dedicated QA Edge profiles often use **9224** / **9225** with matching `config.*.local.json` + `cdpUserDataDir` (local-only files). Do not point `--cdpEndpoint` at one port while still loading another port’s profile.
 - If `--attachMatchUrl` is not provided, emulator auto-uses the target URL domain as attach hint.
 - Add `--attachRequireMatch true` to fail fast if wrong tab is selected.
 - In CDP + `--liveMode true` (no `--background true`), emulator keeps the browser open and reuses the matching tab.

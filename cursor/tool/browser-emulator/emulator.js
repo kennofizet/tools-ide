@@ -854,7 +854,11 @@ async function main() {
   if (!effectiveConfiguredUrl && !useCdp) {
     throw new Error("Missing URL. Set `url` in config.json or pass --url");
   }
-  const cdpPreferredTargetRaw = args.url || args.attachMatchUrl || effectiveConfiguredUrl || effectiveAttachMatchUrl;
+  const cdpPreferredTargetRaw = args.url
+    || args.actionUrl
+    || args.attachMatchUrl
+    || effectiveConfiguredUrl
+    || effectiveAttachMatchUrl;
   const targetUrl = normalizeUrlInput(useCdp ? cdpPreferredTargetRaw : effectiveConfiguredUrl);
   const initialDomainHint = getDomainFromAnyUrl(targetUrl || effectiveConfiguredUrl || "", "unknown-domain");
 
@@ -989,7 +993,10 @@ async function main() {
         });
         if (!cdpReady.available) {
           throw new Error(
-            `CDP endpoint unavailable at ${cdpEndpoint}. Start browser with remote debugging or enable cdpAutoStart.`
+            `CDP endpoint unavailable at ${cdpEndpoint}. ` +
+            `Open Edge with matching --remote-debugging-port, or use a config whose cdpEndpoint + cdpUserDataDir match ` +
+            `(dedicated ports such as 9224/9225 each need their own profile; local configs stay gitignored). ` +
+            `Do not point --cdpEndpoint at one port while still using another port's profile.`
           );
         }
         if (cdpReady.startedByTool) {
@@ -1007,11 +1014,18 @@ async function main() {
           const previews = selected.availableUrls.slice(0, 5).join(" | ");
           appendLog(logPath, `CDP warning: no tab matched '${effectiveAttachMatchUrl}'.`);
           appendLog(logPath, `CDP available tabs: ${previews || "(none)"}`);
-          if (cdpAutoOpenIfMissing && targetUrl) {
-            appendLog(logPath, `CDP fallback: navigating current tab to '${targetUrl}'`);
+          const onlyBlankTabs = (selected.availableUrls || []).length === 0
+            || (selected.availableUrls || []).every((u) => !u || String(u).startsWith("about:blank"));
+          const openTarget = normalizeUrlInput(args.url || args.actionUrl || effectiveConfiguredUrl || targetUrl || "");
+          if (openTarget && (cdpAutoOpenIfMissing || onlyBlankTabs)) {
+            appendLog(
+              logPath,
+              `CDP fallback: navigating current tab to '${openTarget}'` +
+              (onlyBlankTabs && !cdpAutoOpenIfMissing ? " (fresh profile / blank tabs)" : "")
+            );
             await gotoWithTimeoutRecovery({
               page,
-              targetUrl,
+              targetUrl: openTarget,
               timeoutMs,
               logPath,
               label: "cdp-fallback"
@@ -1726,11 +1740,13 @@ async function main() {
       logPath,
       fsModule: fs
     });
+    const summaryMode = (usingCdp || (useCdp && !forceLocalLaunch)) ? "cdp-attach" : "local-launch";
     const summary = {
       runTag,
       command,
       preset,
-      mode: usingCdp ? "cdp-attach" : "local-launch",
+      mode: summaryMode,
+      cdpEndpoint: useCdp ? cdpEndpoint : null,
       status: runStatus,
       severity,
       warnings,
@@ -1804,7 +1820,7 @@ async function main() {
         finalUrl: finalUrl || null,
         sessionName,
         keepProgress,
-        mode: usingCdp ? "cdp-attach" : "local-launch",
+        mode: summaryMode,
         domPath: finalDomPath,
         domLength,
         screenshotPath: finalScreenshotPath,
